@@ -5,22 +5,18 @@ include $(SRCROOT)/config.mk
 .PHONY: default
 default: cilpp
 
-# FIXME
 OCAMLFIND ?= ocamlfind
-LIBALLOCS ?= /home/stephen/work/devel/liballocs.hg
-LIBALLOCS_BASE ?= $(realpath $(LIBALLOCS))
-CIL_INSTALL ?= $(LIBALLOCS)/tools/lang/c/cil
-#vpath %.cma $(CIL_INSTALL)/lib/cil
+ifeq ($(CIL_INSTALL,)
+$(error Please set CIL_INSTALL to your CIL directory (containing a lib/cil subdirectory))
+endif
 
 OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
 OCAMLFIND ?= ocamlfind
 OCAMLFLAGS +=  -package findlib -package dynlink -I $(CIL_INSTALL)/lib/cil
-OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib -I $(LIBALLOCS_BASE)/tools/lang/c/cilallocs
+OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib
 
-export LIBALLOCS_BASE
-export LIBALLOCS
 export OCAMLFLAGS
 export OCAMLFIND
 export CIL_INSTALL
