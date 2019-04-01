@@ -1,12 +1,11 @@
 THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 SRCROOT := $(realpath $(dir $(THIS_MAKEFILE))/../../..)
-include $(SRCROOT)/config.mk
 
 .PHONY: default
 default: cilpp
 
 OCAMLFIND ?= ocamlfind
-ifeq ($(CIL_INSTALL,)
+ifeq ($(CIL_INSTALL),)
 $(error Please set CIL_INSTALL to your CIL directory (containing a lib/cil subdirectory))
 endif
 
