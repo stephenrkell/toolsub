@@ -95,9 +95,6 @@ scrape_cpp_options () {
     debug_print 1 "outfile is $outfile" 1>&2
     # do the cpp, then run CIL
     debug_print 1 "We think we do have to substitute preprocessing; args $@" 1>&2
-    #shift # get rid of the cc1 "argument"
-    #run_with_replacement_infile "$tmpfile"
-    declare -a cpp_options
     cpp_options[0]="-driver"
     cpp_options[1]="$driver"
     ctr=2

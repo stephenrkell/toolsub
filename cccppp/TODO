@@ -1,0 +1,4 @@
+first steps:
+
+build a simple test infrastructure that passes through our tool
+run Eli Bendersky's tool over some real C++ code.

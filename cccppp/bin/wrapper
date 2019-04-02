@@ -18,7 +18,7 @@
 #
 # to run with cilpp.
 case "$0" in
-    (*cflags|*cppflags)
+    (*cxxflags|*cppflags)
         /bin/echo -no-integrated-cpp -wrapper "$(readlink -f "$(dirname "$0")")"/wrapper
         exit 0
     ;;
@@ -36,7 +36,7 @@ debug_print 1 "\$1 is $1" 1>&2
 
 cmd_to_run="$1"
 case "$cmd_to_run" in
-    (*/cc1)
+    (*/cc1plus)
         ctr=0
         # if we're only preprocessing, or if we have no explicit output file, just run cc1
         if ! is_pp "$@"; then
@@ -45,16 +45,9 @@ case "$cmd_to_run" in
             exec "$@"
         else
             # run cilpp, which should take care of the temporary file thing
-            declare -a cpp_options
             scrape_cpp_options "$@"
-            debug_print 1 "Scraped cpp options: [${cpp_options[@]}]" 1>&2
-            debug_print 1 "$(dirname "$0")"/cilpp "${cpp_options[@]}" 1>&2
-            exec "$(dirname "$0")"/cilpp "${cpp_options[@]}"
-            #exec "$cmd_to_run" "$@"
-            #
-            #tmpfile="$(mktemp)" || exit 1
-            #debug_print 1 "Substituted $tmpfile in place of $outfile" 1>&2
-            #run_with_replacement_outfile "$tmpfile" "$@" && \
+            debug_print 1 "$(dirname "$0")"/cccppp "${cpp_options[@]}" 1>&2
+            exec "$(dirname "$0")"/cccppp "${cpp_options[@]}"
         fi
         ;;
     (*) debug_print 1 "Non-wrapping: $@" 1>&2

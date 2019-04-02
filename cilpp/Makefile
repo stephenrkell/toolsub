@@ -1,6 +1,4 @@
 THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
-SRCROOT := $(realpath $(dir $(THIS_MAKEFILE))/../..)
-include $(SRCROOT)/config.mk
 
 .PHONY: default
 default: src

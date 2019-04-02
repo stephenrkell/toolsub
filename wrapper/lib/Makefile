@@ -1,28 +1,18 @@
 THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
-SRCROOT := $(realpath $(dir $(THIS_MAKEFILE))/../../..)
+SRCROOT := $(realpath $(dir $(THIS_MAKEFILE))/../..)
 
 .PHONY: default
-default: cilpp
+default: compiler_args.cmx mkstemp_stubs.o
 
 OCAMLFIND ?= ocamlfind
-ifeq ($(CIL_INSTALL),)
-$(error Please set CIL_INSTALL to your CIL directory (containing a lib/cil subdirectory))
-endif
-
 OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
 OCAMLFIND ?= ocamlfind
-OCAMLFLAGS +=  -package findlib -package dynlink -I $(CIL_INSTALL)/lib/cil
-OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib
-OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/../../wrapper/lib
-vpath %.cmx $(dir $(THIS_MAKEFILE))/../../wrapper/lib
-vpath %.o $(dir $(THIS_MAKEFILE))/../../wrapper/lib
+OCAMLFLAGS +=  -package findlib
 
 export OCAMLFLAGS
 export OCAMLFIND
-export CIL_INSTALL
-
 
 # IMPORTANT: only list cmxa files here iff they are *not*
 # covered by a -package argument to ocamlfind -- CHECK the
@@ -45,8 +35,6 @@ export CIL_INSTALL
 OCAMLLIBS := str.cmxa nums.cmxa unix.cmxa cil.cmxa #frontc.cmxa
 # we use -linkall to include the whole cmxa, so that plugins can
 # dynlink against any of its symbols.
-cilpp: compiler_args.cmx cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/lib/cil/cil.cmxa
-	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
 	
 %.cmxs: %.cmx
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+
