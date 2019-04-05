@@ -17,6 +17,8 @@ let () =
     (* delete temporary file unless -save-temps *)
     (*let () = if saveTemps then () else unlink newTempName in *)
     (* dup2 our stdout to the original out file, and our stdin to the temp *)
+    (* First we copy the prelude to the output. If we don't have a prelude
+     * argument (FIXME: look for one in ppPassesToRun) we use the default. *)
     let () = match !originalOutfile with
         Some(fname) -> let outfd = Unix.openfile fname [O_RDWR; O_CREAT] 0o640 in
             ((output_string Pervasives.stderr ("output should go to " ^ fname ^ "\n"); Pervasives.flush Pervasives.stderr);
@@ -31,5 +33,13 @@ let () =
         then Filename.concat Filename.current_dir_name "cccppp-tool"
         else Filename.concat (Filename.dirname Sys.executable_name) "cccppp-tool"
     in
+    let preludePath = List.fold_left Filename.concat (Filename.dirname toolPath)
+        [".."; "include"; "prelude.hpp"]
+    in
+    (* print the line marker for the prelude *)
+    (output_string Pervasives.stdout ("# 1 \"" ^ preludePath ^ "\"\n"); flush Pervasives.stdout;
+    (* FIXME: manage quoting properly -- probably by avoiding Unix.system *)
+    Unix.system ("cat '" ^ preludePath ^ "'");
     (* FIXME: pass "/dev/stdin" if we can figure out how to tell clang it's C++ *)
     execv toolPath [|toolPath; newTempName ; "--"|]
+    )

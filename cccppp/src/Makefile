@@ -5,7 +5,7 @@ default: cccppp cccppp-tool
 
 CXX_OBJS := $(patsubst %.cpp,%.o,$(wildcard *.cpp))
 
-cccppp-tool: LDLIBS += \
+dump cccppp-tool: LDLIBS += \
         -Wl,--start-group \
         -lclangAST \
         -lclangASTMatchers \
@@ -31,14 +31,16 @@ cccppp-tool: LDLIBS += \
         -lclangTooling \
         -lclangFormat \
         -Wl,--end-group \
-        -lLLVM-6.0
+        -lLLVM-8
 
-$(CXX_OBJS): CXX := clang-6.0
-$(CXX_OBJS): CXXFLAGS += -std=c++14 -g `llvm-config-6.0 --cflags`
+$(CXX_OBJS): CXX := clang-8
+$(CXX_OBJS): CXXFLAGS += -std=c++14 -g `llvm-config-8 --cflags` -UNDEBUG
 
-cccppp-tool: LDFLAGS += `llvm-config-6.0 --ldflags`
+dump cccppp-tool: LDFLAGS += `llvm-config-8 --ldflags`
 
-cccppp-tool: $(CXX_OBJS)
+cccppp-tool: main.o
+	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
+dump: dump.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 
 OCAMLOPTFLAGS += -fPIC
@@ -66,5 +68,5 @@ cccppp: compiler_args.cmx cccppp.ml mkstemp_stubs.o
 	$(OCAMLFIND) ocamlc -o "$@" $(OCAMLFLAGS) -a $+
 
 clean:
-	rm -f *.o *.cmxa *.cmx *.cmo *.cmxs
-
+	rm -f *.o *.cmxa *.cmx *.cmo *.cmxs *.cmi
+	rm -f cccppp cccppp-tool

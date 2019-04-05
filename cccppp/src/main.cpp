@@ -19,83 +19,485 @@
 using namespace clang;
 using namespace clang::driver;
 using namespace clang::tooling;
+using clang::ast_type_traits::DynTypedNode;
 
 class CCCPPPASTVisitor : public RecursiveASTVisitor<CCCPPPASTVisitor> {
 public:
-  CCCPPPASTVisitor(Rewriter &R) : TheRewriter(R) {}
+  bool shouldTraversePostOrder() const /* override */ { return true; }
+  CCCPPPASTVisitor(Rewriter &R, ASTContext &C) : TheRewriter(R), TheContext(C) {}
 
+  /// helper that gets the original text for any expression (FIXME: can do more efficiently?)
+  std::string GetReplacedText(Stmt *e)
+  {
+    /* PROBLEM 1: sometimes this just seems to do the wrong thing.
+     *    
+     * PROBLEM 2: nested expressions!
+     * If we replace some text, then replace some text that includes some replaced text,
+     * we want to pick up the replaced version. The rewriter should be able to give us
+     * this, probably. Instead of getting the character data from a memory buf, we
+     * want to read from the rewrite rope. */
+    std::string s = TheRewriter.getRewrittenText(e->getSourceRange());
+    //llvm::errs() << "Replaced text is: `" << s << "'\n";
+    // it should not end with a comma!
+    
+    assert(s.at(s.length() - 1) != ',');
+    return s;
+    //const char *start = TheRewriter.getSourceMgr().getCharacterData(e->getLocStart());
+    //int len = TheRewriter.getRangeSize(e->getSourceRange());
+    //return std::string(start, (len < 0) ? 0 : (size_t) len);
+  }
+  
+  void ReplaceExpression(Expr *e, const std::string& replacement)
+  {
+    llvm::errs() << "Replacing expression having current text: `"
+      << TheRewriter.getRewrittenText(e->getSourceRange()) << "'\n";
+    llvm::errs() << "Replacement text is: `" << replacement << "'\n";
+    const char *start = TheRewriter.getSourceMgr().getCharacterData(e->getSourceRange().getBegin());
+    std::pair<FileID, unsigned> locStart = TheRewriter.getSourceMgr().getDecomposedLoc(e->getSourceRange().getBegin());
+    std::pair<FileID, unsigned> locEnd = TheRewriter.getSourceMgr().getDecomposedLoc(e->getSourceRange().getEnd());
+    int len = 1 + locEnd.second - locStart.second;
+    llvm::errs() << "Original text was (maybe): " << std::string(start, (len < 0) ? 0 : (size_t) len)
+      << "\n";
+
+    TheRewriter.ReplaceText(e->getSourceRange(), replacement);
+    
+    /* PROBLEM:
+       If we have
+            expr1  [ expr2 ]
+           ^^    ^   ^    ^ ^
+           |`----'    `---' |
+           \________________/
+            sourcerange
+
+       and we rewrite it to
+            __primop_blah( expr1 , expr2  )
+            ^             ^     ^ ^     ^  ^
+            |             `-----' `-----'  |
+            `------------------------------'
+       clearly sourcerange(file/offset..file/offset))  maps to the rewritten buffer
+              
+              BUT do the expr1's and expr2's source ranges also point there?
+              How does Clang know to map *their* locations into the rewrite buffer?
+
+       Clang doesn't know that the expression structure has changed.
+       Indeed it hasn't! Clang still sees an ArraySubscriptExpr, say.
+       We have just updated the pointers.
+       For some reason, we're not geting the update right at the moment.
+       Do we need to factor the rewrite into smaller components somehow?
+       Or simply update the source range of the subexpressions?
+                *
+     * Let's try doing it differently.
+     *
+     *       AAAAA        BBBBB        CCCCCC
+     *               p      [     off     ]
+     *       XXXXX __e1__ YYYYY __e2__ ZZZZZZ
+     *       `------------eOuter------------'
+     * Instead of one big replace, perhaps we should
+     * - replace the AAAAA with XXXXX, i.e. from the start of eOuter up to the start of e1
+     * - replace the BBBBB with YYYYY
+     * - replace the CCCCC with ZZZZZ
+     * I.e. we never replace the contents of e1 and e2
+
+     */
+      llvm::errs() << "Now the expression has text : `"
+        << GetReplacedText(e) << "'\n";
+      assert(GetReplacedText(e) == replacement);
+  }
+  unsigned SameFileDisplacement(const SourceLocation& start, const SourceLocation &end)
+  {
+    std::pair<FileID, unsigned> locStart = TheRewriter.getSourceMgr().getDecomposedLoc(start);
+    std::pair<FileID, unsigned> locEnd = TheRewriter.getSourceMgr().getDecomposedLoc(end);
+    assert(locStart.first == locEnd.first);
+    return locEnd.second - locStart.second;
+  }
+  void ReplaceBinaryExpression(Expr *eOuter, Expr *eSubLeft, Expr *eSubRight,
+    const std::string& replacementA, const std::string& replacementB, const std::string& replacementC)
+  {
+    llvm::errs() << "Replacing binary expression having current text: `"
+      << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
+    llvm::errs() << "Left-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubLeft->getSourceRange()) << "'\n";
+    llvm::errs() << "Right-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubRight->getSourceRange()) << "'\n";
+    llvm::errs() << "Replacement fragments: {`" << replacementA << "'}, {`"
+      << replacementB << "'}, {`"
+      << replacementC << "'}\n";
+    auto outerBeginLoc = TheRewriter.getSourceMgr().getDecomposedLoc(eOuter->getSourceRange().getBegin());
+    unsigned offsetBeginOuter = outerBeginLoc.second;
+    unsigned offsetBeginSubLeft = TheRewriter.getSourceMgr().getDecomposedLoc(eSubLeft->getSourceRange().getBegin()).second;
+    unsigned offsetBeginSubRight = TheRewriter.getSourceMgr().getDecomposedLoc(eSubRight->getSourceRange().getBegin()).second;;
+    // these are wrong!!! Is the moral that we should not ask the source manager for any offset?
+    auto outerEndLoc = TheRewriter.getSourceMgr().getDecomposedLoc(eOuter->getSourceRange().getEnd());
+    unsigned offsetEndOuter = outerEndLoc.second;
+    unsigned offsetEndSubLeft = TheRewriter.getSourceMgr().getDecomposedLoc(eSubLeft->getSourceRange().getEnd()).second;
+    unsigned offsetEndSubRight = TheRewriter.getSourceMgr().getDecomposedLoc(eSubRight->getSourceRange().getEnd()).second;;
+    
+    auto inserted = rawRangesRewritten.insert(std::make_pair(outerBeginLoc.first,
+      std::make_pair(outerBeginLoc.second, outerEndLoc.second)));
+    if (!inserted.second)
+    {
+      // we've been here before.
+      llvm::errs() << "Skipping rewriting as we've processed this source range before (FIXME: skip those extra template instantiations...)\n";
+      return;
+    }
+    // here we hack up the "real" sizes
+    // by asking 
+    unsigned offsetHackedEndOuter = offsetBeginOuter + TheRewriter.getRewrittenText(eOuter->getSourceRange()).length();
+    unsigned offsetHackedEndSubLeft = offsetBeginSubLeft + TheRewriter.getRewrittenText(eSubLeft->getSourceRange()).length();
+    unsigned offsetHackedEndSubRight = offsetBeginSubRight + TheRewriter.getRewrittenText(eSubRight->getSourceRange()).length();
+    //unsigned lengthA = SameFileDisplacement(eOuter->getSourceRange().getBegin(), eSubLeft->getSourceRange().getBegin());
+    //unsigned lengthB = SameFileDisplacement(eSubLeft->getSourceRange().getEnd(), eSubRight->getSourceRange().getBegin());
+    //unsigned lengthC = SameFileDisplacement(eSubRight->getSourceRange().getEnd(), eOuter->getSourceRange().getEnd());
+    unsigned lengthA = offsetBeginSubLeft - offsetBeginOuter;
+    unsigned lengthB = offsetBeginSubRight - offsetHackedEndSubLeft;
+    // if this is negative (huge), it means the (hacked) left-hand expression ends *after*
+    // the right-hand one begins,
+    // i.e. rewriting extended the left-hand expression by more than the original distance between LH-end and RH-begin
+    // Q. WHICH hacked ends are we actually depending on?
+    // A. Those used for length B and length C, i.e. all of them
+    // Q. Can we use the rewriter's view more cleanly/consistently?
+    // We always want to calculate lengths in terms of rewritten text.
+    // Can we calculate begin offsets in those terms too?
+    unsigned lengthC = offsetHackedEndOuter - offsetHackedEndSubRight;
+
+    static const unsigned MAXIMUM_SANE_LENGTH = 10000;
+    llvm::errs() << "Replacee fragments have lengths " << lengthA << ", " << lengthB << ", "
+      << lengthC << "\n";
+    assert(lengthA < MAXIMUM_SANE_LENGTH);
+    assert(lengthB < MAXIMUM_SANE_LENGTH);
+    assert(lengthC < MAXIMUM_SANE_LENGTH);
+    llvm::errs() << "Expressions (outer, l, r) have file begin offsets " << offsetBeginOuter << ", " << offsetBeginSubLeft << ", "
+    << offsetBeginSubRight << "\n";
+    llvm::errs() << "Expressions (outer, l, r) have file end offsets " << offsetEndOuter << ", " << offsetEndSubLeft << ", "
+    << offsetEndSubRight << "\n";
+    llvm::errs() << "Expressions (outer, l, r) have hacked file end offsets " << offsetHackedEndOuter << ", " << offsetHackedEndSubLeft << ", "
+    << offsetHackedEndSubRight << "\n";
+    Rewriter::RewriteOptions notBegin; notBegin.IncludeInsertsAtBeginOfRange = false;
+    if (lengthA > 0) TheRewriter.RemoveText(eOuter->getSourceRange().getBegin(),
+      lengthA);
+    // inserting before the beginning of the left range does not do not what we want;
+    //   the inserted text is included in the left expression's range after the rewrite.
+    TheRewriter.InsertTextBefore(eSubLeft->getSourceRange().getBegin(),
+      replacementA);
+    // try inserting "after" the beginning of eOuter?
+    //TheRewriter.InsertText(eOuter->getSourceRange().getBegin(),
+    //  replacementA, true);
+    // No, that does the same thing! ARGH! Try inserting "not after"?
+    //TheRewriter.InsertText(eOuter->getSourceRange().getBegin(),
+    //  replacementA, false);
+    // No, that does the same thing too. Am I sure that ReplaceText didn't do the right thing?
+    //TheRewriter.ReplaceText(eOuter->getSourceRange().getBegin(),
+    //  lengthA,
+    //  replacementA);
+    // No, that turned "__a" into "__m" i.e. rebound the left expr's location to the replacement
+    // What about doing the insertion *then* doing the removal?
+    TheRewriter.ReplaceText(eSubLeft->getSourceRange().getBegin().getLocWithOffset(offsetHackedEndSubLeft - offsetBeginSubLeft),
+      lengthB,
+      replacementB);
+    
+    
+    TheRewriter.ReplaceText(eSubRight->getSourceRange().getBegin().getLocWithOffset(offsetHackedEndSubRight - offsetBeginSubRight),
+      lengthC,
+      replacementC);
+    llvm::errs() << "Now left-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubLeft->getSourceRange()) << "'\n";
+    llvm::errs() << "Now right-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubRight->getSourceRange()) << "'\n";
+    llvm::errs() << "Now whole binary expression is: `"
+      << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
+  }
+  
+  /* For now, let's visit expressions that involve operator[] or its builtin
+   * (we say "primop"). These are (in reverse order) 
+   * - ArraySubscriptExpr,
+   * - CXXOperatorCallExpr where the first operand is an ImplicitCastExpr of a DeclRefExpr
+   *    ref'ing the decl of the operator being called, i.e. an operator[].
+   * In Clang, expressions (Expr) are a kind of statement (Stmt).
+   */
   bool VisitStmt(Stmt *s) {
-    // Only care about If statements.
-    if (isa<IfStmt>(s)) {
-      IfStmt *IfStatement = cast<IfStmt>(s);
-      Stmt *Then = IfStatement->getThen();
-
-      //TheRewriter.InsertText(Then->getLocStart(), "// the 'if' part\n", true,
-      //                       true);
-
-      Stmt *Else = IfStatement->getElse();
-      //if (Else)
-      //  TheRewriter.InsertText(Else->getLocStart(), "// the 'else' part\n",
-      //                         true, true);
+    /* We have to look at the AST context to decide whether to skip this. 
+     * We skip if
+     * (1) it's a template instance when we have already rewritten the template
+     *        definition;
+     * (2) we're in a context like addr-of, sizeof or decltype where the code
+     *        is not actually being executed.
+     */
+    auto parents = TheContext.getParents(*s);
+    while (!parents.empty())
+    {
+      const ast_type_traits::DynTypedNode *parentNode;
+      switch (parents.size())
+      {
+        case 0: assert(false);
+        case 1: // good
+          parentNode = &parents[0];
+          break;
+        default:
+          llvm::errs() << "More than one parent for ";
+          s->printPretty(llvm::errs(), nullptr, PrintingPolicy(LangOptions()));
+          llvm::errs() << " so just taking the first one (FIXME).\n";
+          parentNode = &parents[0];
+          break;
+      }
+      /* Now we have a parent. We might have seen enough.
+       * If we hit a decl, that's too far. */
+      bool shouldStopWalkingParents = [&]() -> bool {
+        const clang::Decl *aDecl = parentNode->get<clang::Decl>();
+        return !!aDecl;
+      }();
+      if (shouldStopWalkingParents) break;
+      bool shouldSkipGivenThisAncestor = [&]() -> bool {
+        const clang::Stmt *aStmt = parentNode->get<clang::Stmt>();
+        if (aStmt && (
+            (isa<UnaryOperator>(aStmt) && cast<clang::UnaryOperator>(aStmt)->getOpcode() == UO_AddrOf)
+          ))
+        {
+          llvm::errs() << "Skipping something under an addr-of expr!\n";
+          return true;
+        } else if (aStmt && (
+           (isa<UnaryExprOrTypeTraitExpr>(aStmt))
+          ))
+        {
+          llvm::errs() << "Skipping something under a sizeof, _Alignof, decltype or similar expr!\n";
+          return true;
+        }
+        return false;
+      }();
+      
+      if (shouldSkipGivenThisAncestor)
+      {
+        return true;
+      }
+      parents = TheContext.getParents(*parentNode);
     }
+//       for (auto it = parents.begin(); it != parents.end(); ++it)
+//       do {
+//         llvm::errs() << "Parent of ";
+//         //s->dump();
+//         s->printPretty(llvm::errs(), nullptr, PrintingPolicy(LangOptions()));
+//         llvm::errs() << " is ";
+//       if (it == TheContext.getParents(*s).end())
+//       {
+//         llvm::errs() << "empty!\n";
+//       }
+//       else
+//       {
+//         llvm::errs() << "a " << it->getNodeKind().asStringRef() << "\n";
+//         const clang::Decl *aDecl = it->get<clang::Decl>();
+//         if (aDecl)
+//         {
+//           llvm::errs() << "Really! Parent is a Decl\n";
+//           break;
+//         }
+// 
+//         const clang::Stmt *aStmt = it->get<clang::Stmt>();
+//         if (aStmt)
+//         {
+//           llvm::errs() << "Really! Parent is Stmt\n";
+//           break;
+//         }
+// 
+//         //Type, TypeLoc, NestedNameSpecifier or NestedNameSpecifierLoc. 
+//         const clang::Type *aType = it->get<clang::Type>();
+//         if (aType)
+//         {
+//           llvm::errs() << "Really! Parent is a Type\n";
+//           break;
+//         }
+//         const clang::TypeLoc *aTypeLoc = it->get<clang::TypeLoc>();
+//         if (aTypeLoc)
+//         {
+//           llvm::errs() << "Really! Parent is a TypeLoc\n";
+//           break;
+//         }
+//         const clang::NestedNameSpecifier *aNestedNameSpecifier = it->get<clang::NestedNameSpecifier>();
+//         if (aNestedNameSpecifier)
+//         {
+//           llvm::errs() << "Really! Parent is a NestedNameSpecifier\n";
+//           break;
+//         }
+//         const clang::NestedNameSpecifierLoc *aNestedNameSpecifierLoc = it->get<clang::NestedNameSpecifierLoc>();
+//         if (aNestedNameSpecifierLoc)
+//         {
+//           llvm::errs() << "Really! Parent is a NestedNameSpecifierLoc\n";
+//           break;
+//         }
+// 
+//         llvm::errs() << "Really? Parent is something else\n";
+//       }
+//     } while(0);
 
+  
+    if (isa<ArraySubscriptExpr>(s)) {
+      /* There are two cases:
+       * (1) it's really the builtin array subscript;
+       * (2) it's a template that might actually bind to an overload.
+       */
+      ArraySubscriptExpr *e = cast<ArraySubscriptExpr>(s);
+      llvm::errs() << "Post-order-reached a new ArraySubscriptExpr: ";
+      e->printPretty(llvm::errs(), nullptr, PrintingPolicy(LangOptions()));
+      llvm::errs() << " at ";
+      e->getSourceRange().getBegin().print(llvm::errs(), TheRewriter.getSourceMgr());
+      llvm::errs() << "\n";
+      e->dump();
+      // replace it with some text we have crafted
+      QualType indexedType = e->getLHS()->getType();
+      // is this definitely an array?
+      if (indexedType.getTypePtr()->isTemplateTypeParmType()
+        || indexedType.getTypePtr()->isDependentType()
+        || indexedType.getTypePtr()->isInstantiationDependentType()
+        || indexedType.getTypePtr()->isUndeducedType())
+      {
+        /* We want to print the type name, or an expression for it,
+         * as it already appears in the code. But in many cases this
+         * comes out as "<dependent type>", and I haven't figured out a
+         * way to make clang print what we want. So use decltype() for now. */
+        std::string lhBefore = GetReplacedText(e->getLHS());
+        std::string rhBefore = GetReplacedText(e->getRHS());
+        ReplaceBinaryExpression(e, e->getLHS(), e->getRHS(),
+          std::string("__maybe_primop_subscript<")
+          + "decltype("
+          + lhBefore
+          + "), !__has_subscript_overload<decltype(" + lhBefore + ")>::value>()(",
+          ", ",
+          ")"
+        );
+        // after replacement, we should still have the same view of the subexpressions
+        /* HOW can we possibly arrange this?
+         *  -- the rewrite buffer needs to know what partof the replacement
+         *     corresponds to the old subexpression
+         *  -- if all we have is deletions and insertions, that's difficult
+         *  -- can we delete the 
+         * WHY is it so important?
+         *    
+         */
+        assert(e->getLHS()->getSourceRange().getBegin() == e->getSourceRange().getBegin()
+        || lhBefore == GetReplacedText(e->getLHS()));
+        assert(rhBefore == GetReplacedText(e->getRHS()));
+      }
+      else
+      {
+        std::string lhBefore = GetReplacedText(e->getLHS());
+        std::string rhBefore = GetReplacedText(e->getRHS());
+        ReplaceBinaryExpression(e, e->getLHS(), e->getRHS(),
+          std::string("__primop_subscript<")
+          + indexedType.getAsString()
+          + " >()(",
+          ", ",
+          ")"
+        );
+        // after replacement, we should still have the same view of the subexpressions
+        // EXCEPT we can't do this if the LHS begins at the same place as the
+        // outer expression
+        assert(e->getLHS()->getSourceRange().getBegin() == e->getSourceRange().getBegin()
+        || lhBefore == GetReplacedText(e->getLHS()));
+        assert(rhBefore == GetReplacedText(e->getRHS()));
+      }
+    }
     return true;
   }
 
-  bool VisitFunctionDecl(FunctionDecl *f) {
-    // Only function definitions (with bodies), not declarations.
-    if (f->hasBody()) {
-      Stmt *FuncBody = f->getBody();
-
-      // Type name as string
-      QualType QT = f->getReturnType();
-      std::string TypeStr = QT.getAsString();
-
-      // Function name
-      DeclarationName DeclName = f->getNameInfo().getName();
-      std::string FuncName = DeclName.getAsString();
-
-      // Add comment before
-      std::stringstream SSBefore;
-      SSBefore << "// Begin function " << FuncName << " returning " << TypeStr
-               << "\n";
-      SourceLocation ST = f->getSourceRange().getBegin();
-      //TheRewriter.InsertText(ST, SSBefore.str(), true, true);
-
-      // And after
-      std::stringstream SSAfter;
-      SSAfter << "\n// End function " << FuncName;
-      ST = FuncBody->getLocEnd().getLocWithOffset(1);
-      //TheRewriter.InsertText(ST, SSAfter.str(), true, true);
-    }
-
-    return true;
-  }
+//   bool VisitFunctionDecl(FunctionDecl *f) {
+//     // Only function definitions (with bodies), not declarations.
+//     if (f->hasBody()) {
+//       Stmt *FuncBody = f->getBody();
+// 
+//       // Type name as string
+//       QualType QT = f->getReturnType();
+//       std::string TypeStr = QT.getAsString();
+// 
+//       // Function name
+//       DeclarationName DeclName = f->getNameInfo().getName();
+//       std::string FuncName = DeclName.getAsString();
+// 
+//       // Add comment before
+//       std::stringstream SSBefore;
+//       SSBefore << "// Begin function " << FuncName << " returning " << TypeStr
+//                << "\n";
+//       SourceLocation ST = f->getSourceRange().getBegin();
+//       //TheRewriter.InsertText(ST, SSBefore.str(), true, true);
+// 
+//       // And after
+//       std::stringstream SSAfter;
+//       SSAfter << "\n// End function " << FuncName;
+//       ST = FuncBody->getLocEnd().getLocWithOffset(1);
+//       //TheRewriter.InsertText(ST, SSAfter.str(), true, true);
+//     }
+// 
+//     return true;
+//   }
 
 private:
   Rewriter &TheRewriter;
+  ASTContext &TheContext;
+  std::set<std::pair<FileID, std::pair<unsigned, unsigned>>> rawRangesRewritten;
 };
 
 // Implementation of the ASTConsumer interface for reading an AST produced
 // by the Clang parser.
 class CCCPPPConsumer : public ASTConsumer {
 public:
-  CCCPPPConsumer(Rewriter &R) : Visitor(R) {}
+  CCCPPPConsumer(Rewriter &R, ASTContext &C) : Visitor(R, C), R(R), C(C)
+  {
+    // If I do this
+    // C.getParents(*C.getTranslationUnitDecl());
+    // ... I get no parent info at all.
+    // If I don't do it, I get it for the first top-level decl, and not after that.
+    // UNLESS... I re-set the traversal scope each time around the loop in HandleTopLevelDecl.
+    llvm::errs() << "Translation unit decl has source range: begin ";
+    C.getTranslationUnitDecl()->getSourceRange().getBegin().print(llvm::errs(), R.getSourceMgr());
+    llvm::errs() << ", end ";
+    C.getTranslationUnitDecl()->getSourceRange().getEnd().print(llvm::errs(), R.getSourceMgr());
+    llvm::errs() << "\n";
+    llvm::errs() << "Main file has source range: begin ";
+    C.getTranslationUnitDecl()->getSourceRange().getBegin().print(llvm::errs(), R.getSourceMgr());
+    llvm::errs() << ", end ";
+    C.getTranslationUnitDecl()->getSourceRange().getEnd().print(llvm::errs(), R.getSourceMgr());
+    llvm::errs() << "\n";
+    
+  }
 
   // Override the method that gets called for each parsed top-level
   // declaration.
   bool HandleTopLevelDecl(DeclGroupRef DR) override {
-    //llvm::errs() << "** Saw top-level decl\n";
+    unsigned count = 0;
+    SourceLocation lastSourceLoc;
+    //llvm::errs() << "== Saw top-level decl\n";
     for (DeclGroupRef::iterator b = DR.begin(), e = DR.end(); b != e; ++b) {
+      // HACK: to get parent info, I have to do this, but I have no idea why.
+      C.setTraversalScope({*b});
       // Traverse the declaration using our AST visitor.
       Visitor.TraverseDecl(*b);
-      (*b)->dump();
+      //(*b)->dump();
+      ++count;
+      lastSourceLoc = (*b)->getSourceRange().getEnd();
     }
+    llvm::errs() << "== Processed  " << count << " top-level decl groups\n";
+    llvm::errs() << "== The last one ended at  ";
+    lastSourceLoc.print(llvm::errs(), R.getSourceMgr());
+    llvm::errs() << " (written in main file? "
+      << R.getSourceMgr().isWrittenInMainFile(lastSourceLoc)
+      << ", presumed in main file? "
+      << R.getSourceMgr().isInMainFile(lastSourceLoc)
+      << "; immediate spelling loc: ";
+    R.getSourceMgr().getImmediateSpellingLoc(lastSourceLoc).print(llvm::errs(), R.getSourceMgr());
+    llvm::errs() << ")\n";
+    // can we "project" the loc into the main file? i.e. where is it written in it?
+    
+    
+    /* At some point, we reach the end of the file proper, and then start traversing
+     * the template instantiations that are implied by various other stuff and which
+     * clang has to elaborate in the AST for its own reasons. We have already
+     * rewritten the source code, so if we go on processing them, we will double-
+     * rewrite stuff which will be bad. How can we identify these instances? */
+    
     return true;
   }
 
 private:
   CCCPPPASTVisitor Visitor;
+  Rewriter &R;
+  ASTContext &C;
 };
 
 // For each source file provided to the tool, a new FrontendAction is created.
@@ -104,7 +506,7 @@ public:
   MyFrontendAction() {}
   void EndSourceFileAction() override {
     SourceManager &SM = TheRewriter.getSourceMgr();
-    llvm::errs() << "** EndSourceFileAction for: "
+    llvm::errs() << "== EndSourceFileAction for: "
                  << SM.getFileEntryForID(SM.getMainFileID())->getName() << "\n";
 
     // Now emit the rewritten buffer.
@@ -113,9 +515,9 @@ public:
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef file) override {
-    llvm::errs() << "** Creating AST consumer for: " << file << "\n";
+    llvm::errs() << "== Creating AST consumer for: " << file << "\n";
     TheRewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
-    return llvm::make_unique<CCCPPPConsumer>(TheRewriter);
+    return llvm::make_unique<CCCPPPConsumer>(TheRewriter, CI.getASTContext());
   }
 
 private:
