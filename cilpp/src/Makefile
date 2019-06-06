@@ -6,14 +6,14 @@ default: cilpp
 
 OCAMLFIND ?= ocamlfind
 ifeq ($(CIL_INSTALL),)
-$(error Please set CIL_INSTALL to your CIL directory (containing a lib/cil subdirectory))
+$(error Please set CIL_INSTALL to your CIL directory (containing a file cil/cil.cmxa))
 endif
 
 OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
 OCAMLFIND ?= ocamlfind
-OCAMLFLAGS +=  -package findlib -package dynlink -I $(CIL_INSTALL)/lib/cil
+OCAMLFLAGS +=  -package findlib -package dynlink -I $(CIL_INSTALL)/cil
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 vpath %.cmx $(dir $(THIS_MAKEFILE))/../../wrapper/lib
