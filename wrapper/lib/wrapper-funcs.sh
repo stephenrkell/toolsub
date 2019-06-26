@@ -9,8 +9,10 @@ debug_print () {
 is_pp () {
     saw_pp=0
     outpos=0
+    declare -a seen_args
     while shift; do
         ctr="$(( $ctr + 1 ))"
+        seen_args[$ctr]="$1"
         if [[ -z "$1" ]]; then continue; fi
         case "$1" in
          (-o) outfile="$2"; outpos="$(( $ctr + 1 ))";;
@@ -18,7 +20,13 @@ is_pp () {
         esac
     done
     # if we're only preprocessing, or if we have no explicit output file, just run cc1
-    if [ "$saw_pp" -eq 0 ] || [ $outpos -eq 0 ]; then false; else true; fi
+    if [ "$saw_pp" -eq 0 ] || [ $outpos -eq 0 ]; then
+        debug_print 1 "Wrapping cc1, we don't seem to be doing preprocessing." 1>&2
+        false
+    else
+        debug_print 1 "Wrapping cc1, we seem to be doing a preprocessing step; args ${seen_args[@]}" 1>&2
+        true
+    fi
 }
 
 run_with_replacement_outfile () {
@@ -38,7 +46,7 @@ run_with_replacement_outfile () {
 }
 
 run_with_replacement_infile () {
-    # We are running cpp
+    # Scan a command line, identify the input file and replace it with $1
     # PROBLEM: how do we identify the input filename?
     # Doing this generally means understanding cpp's entire command-line syntax.
     # We instead use a HACK:
@@ -72,7 +80,7 @@ run_with_replacement_infile () {
         case "$1" in
             (-E|-quiet) ;; # skip it!
             (-D|-U|-include) must_read_arg=1; args[$ctr]="$1" ;;
-            (-imultiarch) shift || break ;; # skip it and its arg!
+            (-imultiarch|-iremap) shift || break ;; # skip it and its arg!
             (--) no_more_options=1 ;;
             (-*) if [[ -z "$no_more_options" ]]; then args[$ctr]="$1"; else handle_possible_infile "$1"; fi ;;
             (*) handle_possible_infile "$1" ;;
@@ -86,24 +94,25 @@ guess_driver () {
     readlink /proc/$PPID/exe
 }
 
-# build the array of options to pass our preprocessing tool,
-# using our own array of options
-scrape_cpp_options () {
+# Build the array of options to pass our preprocessing tool,
+# given the options that the compiler driver wanted to pass to cc1
+# -- which has its own built-in cpp! Some options won't be understood
+# by the standalone cpp, so we have to filter these out.
+scrape_cpp_options_from_cc1_command () {
     driver="$(guess_driver)"
     debug_print 1 "driver binary is probably $driver" 1>&2
     debug_print 1 "outpos is $outpos" 1>&2
     debug_print 1 "outfile is $outfile" 1>&2
     # do the cpp, then run CIL
-    debug_print 1 "We think we do have to substitute preprocessing; args $@" 1>&2
     cpp_options[0]="-driver"
     cpp_options[1]="$driver"
     ctr=2
     while shift || break; do
         debug_print 1 "\$# is $#, \$1 is '$1'" 1>&2
         case "$1" in
-            # filter out non-cpp args
-            ("-imultiarch") shift || break ;; # skip arg too
-            ("-quiet") ;; # skip just it
+            # we are running our own cpp-alike -- filter out non-cpp args
+            (-imultiarch|-iremap*) shift || break ;; # skip arg too
+            (-quiet|-fhonour-copts) ;; # skip just it
             ('') ;; # FIXME: this shouldn't happen!
             (*)
                 debug_print 1 "Snarfing $1" 1>&2

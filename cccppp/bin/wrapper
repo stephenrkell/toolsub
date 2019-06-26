@@ -40,12 +40,11 @@ case "$cmd_to_run" in
         ctr=0
         # if we're only preprocessing, or if we have no explicit output file, just run cc1
         if ! is_pp "$@"; then
-            debug_print 1 "We think we don't have to substitute preprocessing." 1>&2
             debug_print 1 "Running non-substituted: $@" 1>&2
             exec "$@"
         else
             # run cilpp, which should take care of the temporary file thing
-            scrape_cpp_options "$@"
+            scrape_cpp_options_from_cc1_command "$@"
             debug_print 1 "$(dirname "$0")"/cccppp "${cpp_options[@]}" 1>&2
             exec "$(dirname "$0")"/cccppp "${cpp_options[@]}"
         fi
