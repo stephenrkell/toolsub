@@ -12,7 +12,7 @@ type extra_arg =
     OutputFile
   | Plugin
   | Driver
-  | DependencyOutputFile
+  | DependencyOutputFile of bool (* nameIsExplicitlyRequested *)
 
 let parseArgsAndRunCppDivertingToTempFile suffix =
     let minusOPos = ref None in
@@ -52,19 +52,31 @@ let parseArgsAndRunCppDivertingToTempFile suffix =
           | "-driver" -> (readingExtraArg := Some(Driver); [])
           | "-plugin" -> (readingExtraArg := Some(Plugin); [])
                 (* NOTE that the driver adds an extra arg to -MD, and indeed that's the point of
-                 * -MD as opposed to -MF. We might have -MF in the mix too, though.
-                 * We delete both and then reinstate them. We want to avoid using -MD
-                 * for real because we want to re-run the driver -E, and the combination
-                 * of -MD, -E and -o changes the meaning of -MD. So it will not do what
-                 * the user intended. I *think* -M -MF <filename>, when passed to the preprocessor,
-                 * will always get that *assuming* they didn't actually pass all three of
-                 * -E, -MD and -o to the driver. FIXME: handle that case if it isn't already.
+                 * -MD as opposed to -MF. So don't be deceived by the manual pages showing -MD
+                 * without an argument: it really does have an argument as far as we're concerned.
+                 * We might have -MF in the mix too, though. That means we should output the
+                 * dependencies to *both* files, I think.
+                 * Final complication: if we have -MD and -E on the command line, it changes
+                 * the semantics of -o. Since we want to be able to *add* both -E and -o,
+                 * with their usual meanings, we must delete -MD and simulate it.
+                 *
+                 * We handle this as follows.
+                 *
+                 * We delete both -MD and -MF and then selectively reinstate them.
+                 * We never use -MD for real because we want to re-run the driver -E and -o, and
+                 * the combination -MD, -E and -o changes the meaning of -MD. So we should use
+                 * multiple -MF options.
+                 *
+                 * If *both* -MD <file> and -MF <file> are present, which one wins? The
+                 * answer is -MF. We don't generate both.
+                 *
+                 * FIXME: handle case where the user passed -E -MD -o <depoutputfile> to the driver.
                  * NOTE that the use of -MD without -MF is already handled by the driver, which
                  * generates the extra argument to -MF. So CHECK whether the other works too. *)
-          | "-MD" -> (seenMd := true; readingExtraArg := Some(DependencyOutputFile); [])
-          | "-MMD" -> (seenMd := true; readingExtraArg := Some(DependencyOutputFile); [])
-          | "-MF" -> (seenMf := true; readingExtraArg := Some(DependencyOutputFile); [])
-          | "-MMF" -> (seenMf := true; readingExtraArg := Some(DependencyOutputFile); [])
+          | "-MD" -> (seenMd := true; readingExtraArg := Some(DependencyOutputFile(false)); [])
+          | "-MMD" -> (seenMd := true; readingExtraArg := Some(DependencyOutputFile(false)); [])
+          | "-MF" -> (seenMf := true; readingExtraArg := Some(DependencyOutputFile(true)); [])
+          | "-MMF" -> (seenMf := true; readingExtraArg := Some(DependencyOutputFile(true)); [])
           | s when String.length s > String.length "-fpass-"
                 && String.sub s 0 (String.length "-fpass-") = "-fpass-" ->
                 let passName = String.sub s (String.length "-fpass-") (String.length s - String.length "-fpass-")
@@ -78,7 +90,8 @@ let parseArgsAndRunCppDivertingToTempFile suffix =
               | Some(Driver) -> driver := Some(arg); []
               | Some(OutputFile) -> originalOutfile := Some(arg); [newTempName]
               | Some(Plugin) -> ppPluginsToLoadReverse := arg :: !ppPluginsToLoadReverse; []
-              | Some(DependencyOutputFile) -> (if !depsOutputFile = None
+              | Some(DependencyOutputFile(nameIsExplicitlyRequested)) -> (
+                    if !depsOutputFile = None || nameIsExplicitlyRequested
                     then depsOutputFile := Some(arg) else (); [])
             in
             readingExtraArg := None; replacement
