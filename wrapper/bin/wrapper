@@ -30,11 +30,15 @@ case "$0" in
     ;;
 esac
 
-. "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
+# Our includer may have already sourced the wrapper funcs so that
+# it could use them. If it does, we will have WRAPPER already set.
+if [[ -z "$WRAPPER" ]]; then
+    . "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
+fi
 
 debug_print 1 "\$1 is $1" 1>&2
 
-CPP=${CPP:-cpp}
+CPP="${CPP:-cpp}"
 cmd_to_run="$1"
 case "$cmd_to_run" in
     (*/cc1)
@@ -45,10 +49,10 @@ case "$cmd_to_run" in
             exec "$@"
         else
             declare -a cpp_options
-            scrape_cpp_options_from_cc1_command "$@"
+            write_cpp_options_from_cc1_options "$@"
             debug_print 1 "Scraped cpp options: [${cpp_options[@]}]" 1>&2
             debug_print 1 "$CPP" "${cpp_options[@]}" 1>&2
-            exec "$CPP" "${cpp_options[@]}"
+            exec $CPP "${cpp_options[@]}"
         fi
         ;;
     (*) debug_print 1 "Non-wrapping: $@" 1>&2

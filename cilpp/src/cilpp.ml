@@ -46,6 +46,11 @@ let () =
     let (newTempName, originalOutfile, saveTemps, ppPluginsToLoad, ppPassesToRun) = parseArgsAndRunCppDivertingToTempFile "i" in
     (* Okay, run CIL; we need the post-preprocessing line directive style *)
     Cil.lineDirectiveStyle := Some Cil.LinePreprocessorOutput;
+    (* We have to use logical operators to avoid breaking code that does -Werror=format-string
+     * ... this involves an expression-level check of the first argument to printf, which
+     * might be a conditional expression. So we can't substitute it with a temporary assigned
+     * in an if/else construct. *)
+    Cil.useLogicalOperators := true;
     let initialCilFile = Frontc.parse newTempName () in
     (* do passes *)
     List.iter Feature.loadWithDeps ppPluginsToLoad;
