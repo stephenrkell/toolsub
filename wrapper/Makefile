@@ -1,5 +1,8 @@
-.PHONY: default lib-recursive
-default: lib-recursive
+.PHONY: default src-recursive lib-symlink
+default: src-recursive lib-symlink
 
-lib-recursive:
-	$(MAKE) -C lib
+src-recursive:
+	$(MAKE) -C src
+lib-symlink: src-recursive
+	for f in src/compiler_args.cmx src/compiler_args.o src/compiler_args.cmi src/mkstemp_stubs.o; do \
+	    test -e "$$f" && ln -sf ../"$$f" lib; done

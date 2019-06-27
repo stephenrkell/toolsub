@@ -26,4 +26,12 @@ wrapper/lib/compiler_args.cmi
 wrapper/lib/compiler_args.cmx
 wrapper/lib/compiler_args.o
 wrapper/lib/mkstemp_stubs.o
+wrapper/src/compiler_args.cmi
+wrapper/src/compiler_args.cmx
+wrapper/src/compiler_args.o
+wrapper/src/mkstemp_stubs.o
+cilpp/src/cilpp
+cilpp/src/cilpp.cmi
+cilpp/src/cilpp.cmx
+cilpp/src/cilpp.o
 

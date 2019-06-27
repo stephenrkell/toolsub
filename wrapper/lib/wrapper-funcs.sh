@@ -20,6 +20,7 @@ is_pp () {
         esac
     done
     # if we're only preprocessing, or if we have no explicit output file, just run cc1
+    # FIXME: why the "no explicit output file" rule? Seems like a hole in our coverage.
     if [ "$saw_pp" -eq 0 ] || [ $outpos -eq 0 ]; then
         debug_print 1 "Wrapping cc1, we don't seem to be doing preprocessing." 1>&2
         false

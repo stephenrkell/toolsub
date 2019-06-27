@@ -1,0 +1,57 @@
+#!/bin/bash
+# FIXME: rewrite this in C, or at least as a POSIX shell script.
+
+# Using gcc's -wrapper option, the compiler driver will invoke
+# us instead of cc1, etc., with the full command path as $1.
+#
+# This is a near-noop wrapper whose sole purpose is to run an
+# alternative cpp instead of the integrated cc1 one.
+# This whole thing is necessary only because -no-integrated-cpp
+# no longer works: even if we pass -no-integrated-cpp, it will
+# not run `cpp' ever... it uses cc1 -E.
+#
+# If we are symlinked under a name ending '-cflags', '-cppflags',
+# '-ldflags' etc, we print out the options that one should pass
+# to the compiler for the wrapper to be employed. So you can do
+#
+# gcc `/path/to/this/file/wrapper-cflags` <... normal gcc args...>
+#
+# to run with the alternative cpp.
+case "$0" in
+    (*cflags|*cppflags)
+        /bin/echo -no-integrated-cpp -wrapper "$(readlink -f "$(dirname "$0")")"/wrapper
+        exit 0
+    ;;
+    (*ldflags)
+        # we don't interfere with linking, so no extra ldflags
+        exit 0
+    ;;
+    (*) # silently continue, i.e. actually act as the wrapper command
+    ;;
+esac
+
+. "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
+
+debug_print 1 "\$1 is $1" 1>&2
+
+CPP=${CPP:-cpp}
+cmd_to_run="$1"
+case "$cmd_to_run" in
+    (*/cc1)
+        ctr=0
+        # if we're only preprocessing, or if we have no explicit output file, just run cc1
+        if ! is_pp "$@"; then
+            debug_print 1 "Running non-substituted: $@" 1>&2
+            exec "$@"
+        else
+            declare -a cpp_options
+            scrape_cpp_options_from_cc1_command "$@"
+            debug_print 1 "Scraped cpp options: [${cpp_options[@]}]" 1>&2
+            debug_print 1 "$CPP" "${cpp_options[@]}" 1>&2
+            exec "$CPP" "${cpp_options[@]}"
+        fi
+        ;;
+    (*) debug_print 1 "Non-wrapping: $@" 1>&2
+        exec "$@"
+        ;;
+esac
