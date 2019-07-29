@@ -29,22 +29,15 @@ public:
   /// helper that gets the original text for any expression (FIXME: can do more efficiently?)
   std::string GetReplacedText(Stmt *e)
   {
-    /* PROBLEM 1: sometimes this just seems to do the wrong thing.
-     *    
-     * PROBLEM 2: nested expressions!
+    /* CARE: nested rewritings!
      * If we replace some text, then replace some text that includes some replaced text,
      * we want to pick up the replaced version. The rewriter should be able to give us
      * this, probably. Instead of getting the character data from a memory buf, we
      * want to read from the rewrite rope. */
     std::string s = TheRewriter.getRewrittenText(e->getSourceRange());
-    //llvm::errs() << "Replaced text is: `" << s << "'\n";
-    // it should not end with a comma!
-    
+    // in our particular case, it should not end with a comma!
     assert(s.at(s.length() - 1) != ',');
     return s;
-    //const char *start = TheRewriter.getSourceMgr().getCharacterData(e->getLocStart());
-    //int len = TheRewriter.getRangeSize(e->getSourceRange());
-    //return std::string(start, (len < 0) ? 0 : (size_t) len);
   }
   
   void ReplaceExpression(Expr *e, const std::string& replacement)
@@ -52,15 +45,32 @@ public:
     llvm::errs() << "Replacing expression having current text: `"
       << TheRewriter.getRewrittenText(e->getSourceRange()) << "'\n";
     llvm::errs() << "Replacement text is: `" << replacement << "'\n";
-    const char *start = TheRewriter.getSourceMgr().getCharacterData(e->getSourceRange().getBegin());
-    std::pair<FileID, unsigned> locStart = TheRewriter.getSourceMgr().getDecomposedLoc(e->getSourceRange().getBegin());
-    std::pair<FileID, unsigned> locEnd = TheRewriter.getSourceMgr().getDecomposedLoc(e->getSourceRange().getEnd());
+    auto& sm = TheRewriter.getSourceMgr();
+    const char *start = sm.getCharacterData(e->getSourceRange().getBegin());
+    std::pair<FileID, unsigned> locStart = sm.getDecomposedLoc(e->getSourceRange().getBegin());
+    std::pair<FileID, unsigned> locEnd = sm.getDecomposedLoc(e->getSourceRange().getEnd());
     int len = 1 + locEnd.second - locStart.second;
     llvm::errs() << "Original text was (maybe): " << std::string(start, (len < 0) ? 0 : (size_t) len)
       << "\n";
-
     TheRewriter.ReplaceText(e->getSourceRange(), replacement);
-    
+    llvm::errs() << "Now the expression has text : `"
+      << GetReplacedText(e) << "'\n";
+    // assert that it really has the effect we want
+    assert(GetReplacedText(e) == replacement);
+  }
+  unsigned SameFileDisplacement(const SourceLocation& start, const SourceLocation &end)
+  {
+    auto& sm = TheRewriter.getSourceMgr();
+    std::pair<FileID, unsigned> locStart = sm.getDecomposedLoc(start);
+    std::pair<FileID, unsigned> locEnd = sm.getDecomposedLoc(end);
+    assert(locStart.first == locEnd.first);
+    return locEnd.second - locStart.second;
+  }
+  void ReplaceBinaryExpression(Expr *eOuter, Expr *eSubLeft, Expr *eSubRight,
+    const std::string& replacementA, const std::string& replacementB,
+    const std::string& replacementC
+  )
+  {
     /* PROBLEM:
        If we have
             expr1  [ expr2 ]
@@ -74,45 +84,28 @@ public:
             ^             ^     ^ ^     ^  ^
             |             `-----' `-----'  |
             `------------------------------'
-       clearly sourcerange(file/offset..file/offset))  maps to the rewritten buffer
+       clearly sourcerange(file/offset..file/offset)) now maps to the rewritten buffer
               
-              BUT do the expr1's and expr2's source ranges also point there?
-              How does Clang know to map *their* locations into the rewrite buffer?
-
-       Clang doesn't know that the expression structure has changed.
+       BUT do the expr1's and expr2's source ranges also point there?
+       How does Clang know to map *their* locations into the rewrite buffer?
+       It doesn't!
+       Clang also doesn't know that the expression's AST has changed.
        Indeed it hasn't! Clang still sees an ArraySubscriptExpr, say.
-       We have just updated the pointers.
-       For some reason, we're not geting the update right at the moment.
-       Do we need to factor the rewrite into smaller components somehow?
-       Or simply update the source range of the subexpressions?
-                *
-     * Let's try doing it differently.
-     *
-     *       AAAAA        BBBBB        CCCCCC
-     *               p      [     off     ]
-     *       XXXXX __e1__ YYYYY __e2__ ZZZZZZ
-     *       `------------eOuter------------'
-     * Instead of one big replace, perhaps we should
-     * - replace the AAAAA with XXXXX, i.e. from the start of eOuter up to the start of e1
-     * - replace the BBBBB with YYYYY
-     * - replace the CCCCC with ZZZZZ
-     * I.e. we never replace the contents of e1 and e2
+       We have just updated the pointers in the text buffers.
 
+       It took some trial and error to get something that works. Here is the idea.
+       In short, we never replace the contents of e1 and e2.
+       Instead we rewrite the "glue syntax" of the overarching expression
+
+             AAAAA        BBBBB        CCCCCC
+                     p      [     off     ]
+             XXXXX __e1__ YYYYY __e2__ ZZZZZZ
+             `------------eOuter------------'
+       That means instead of one big replace,
+       - replace the AAAAA with XXXXX, i.e. from the start of eOuter up to the start of e1
+       - replace the BBBBB with YYYYY
+       - replace the CCCCC with ZZZZZ
      */
-      llvm::errs() << "Now the expression has text : `"
-        << GetReplacedText(e) << "'\n";
-      assert(GetReplacedText(e) == replacement);
-  }
-  unsigned SameFileDisplacement(const SourceLocation& start, const SourceLocation &end)
-  {
-    std::pair<FileID, unsigned> locStart = TheRewriter.getSourceMgr().getDecomposedLoc(start);
-    std::pair<FileID, unsigned> locEnd = TheRewriter.getSourceMgr().getDecomposedLoc(end);
-    assert(locStart.first == locEnd.first);
-    return locEnd.second - locStart.second;
-  }
-  void ReplaceBinaryExpression(Expr *eOuter, Expr *eSubLeft, Expr *eSubRight,
-    const std::string& replacementA, const std::string& replacementB, const std::string& replacementC)
-  {
     llvm::errs() << "Replacing binary expression having current text: `"
       << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
     llvm::errs() << "Left-hand subexpression is:  `"
@@ -122,16 +115,17 @@ public:
     llvm::errs() << "Replacement fragments: {`" << replacementA << "'}, {`"
       << replacementB << "'}, {`"
       << replacementC << "'}\n";
-    auto outerBeginLoc = TheRewriter.getSourceMgr().getDecomposedLoc(eOuter->getSourceRange().getBegin());
+    auto& sm = TheRewriter.getSourceMgr();
+    auto outerBeginLoc = sm.getDecomposedLoc(eOuter->getSourceRange().getBegin());
     unsigned offsetBeginOuter = outerBeginLoc.second;
-    unsigned offsetBeginSubLeft = TheRewriter.getSourceMgr().getDecomposedLoc(eSubLeft->getSourceRange().getBegin()).second;
-    unsigned offsetBeginSubRight = TheRewriter.getSourceMgr().getDecomposedLoc(eSubRight->getSourceRange().getBegin()).second;;
+    unsigned offsetBeginSubLeft = sm.getDecomposedLoc(eSubLeft->getSourceRange().getBegin()).second;
+    unsigned offsetBeginSubRight = sm.getDecomposedLoc(eSubRight->getSourceRange().getBegin()).second;;
     // these are wrong!!! Is the moral that we should not ask the source manager for any offset?
-    auto outerEndLoc = TheRewriter.getSourceMgr().getDecomposedLoc(eOuter->getSourceRange().getEnd());
+    auto outerEndLoc = sm.getDecomposedLoc(eOuter->getSourceRange().getEnd());
     unsigned offsetEndOuter = outerEndLoc.second;
-    unsigned offsetEndSubLeft = TheRewriter.getSourceMgr().getDecomposedLoc(eSubLeft->getSourceRange().getEnd()).second;
-    unsigned offsetEndSubRight = TheRewriter.getSourceMgr().getDecomposedLoc(eSubRight->getSourceRange().getEnd()).second;;
-    
+    unsigned offsetEndSubLeft = sm.getDecomposedLoc(eSubLeft->getSourceRange().getEnd()).second;
+    unsigned offsetEndSubRight = sm.getDecomposedLoc(eSubRight->getSourceRange().getEnd()).second;;
+
     auto inserted = rawRangesRewritten.insert(std::make_pair(outerBeginLoc.first,
       std::make_pair(outerBeginLoc.second, outerEndLoc.second)));
     if (!inserted.second)
@@ -140,63 +134,74 @@ public:
       llvm::errs() << "Skipping rewriting as we've processed this source range before (FIXME: skip those extra template instantiations...)\n";
       return;
     }
-    // here we hack up the "real" sizes
-    // by asking 
-    unsigned offsetHackedEndOuter = offsetBeginOuter + TheRewriter.getRewrittenText(eOuter->getSourceRange()).length();
-    unsigned offsetHackedEndSubLeft = offsetBeginSubLeft + TheRewriter.getRewrittenText(eSubLeft->getSourceRange()).length();
-    unsigned offsetHackedEndSubRight = offsetBeginSubRight + TheRewriter.getRewrittenText(eSubRight->getSourceRange()).length();
-    //unsigned lengthA = SameFileDisplacement(eOuter->getSourceRange().getBegin(), eSubLeft->getSourceRange().getBegin());
-    //unsigned lengthB = SameFileDisplacement(eSubLeft->getSourceRange().getEnd(), eSubRight->getSourceRange().getBegin());
-    //unsigned lengthC = SameFileDisplacement(eSubRight->getSourceRange().getEnd(), eOuter->getSourceRange().getEnd());
+    /* We may be rewriting something that was rewritten earlier.
+     * So some hackery is necessary when calculating the offsets
+     * and lengths of replacement text. We always want to calculate
+     * based on the *rewritten* text length. */
+    unsigned offsetHackedEndOuter = offsetBeginOuter
+        + TheRewriter.getRewrittenText(eOuter->getSourceRange()).length();
+    unsigned offsetHackedEndSubLeft = offsetBeginSubLeft
+        + TheRewriter.getRewrittenText(eSubLeft->getSourceRange()).length();
+    unsigned offsetHackedEndSubRight = offsetBeginSubRight
+        + TheRewriter.getRewrittenText(eSubRight->getSourceRange()).length();
+    /* FIXME: should we also have an offsetHackedBegin{Outer,Subleft,Subright}?
+     * i.e. we always want to calculate lengths in terms of rewritten text.
+     * Can we calculate begin offsets in those terms too?
+     * i.e. can we use the rewriter's view more cleanly/consistently? */
     unsigned lengthA = offsetBeginSubLeft - offsetBeginOuter;
     unsigned lengthB = offsetBeginSubRight - offsetHackedEndSubLeft;
-    // if this is negative (huge), it means the (hacked) left-hand expression ends *after*
-    // the right-hand one begins,
-    // i.e. rewriting extended the left-hand expression by more than the original distance between LH-end and RH-begin
-    // Q. WHICH hacked ends are we actually depending on?
-    // A. Those used for length B and length C, i.e. all of them
-    // Q. Can we use the rewriter's view more cleanly/consistently?
-    // We always want to calculate lengths in terms of rewritten text.
-    // Can we calculate begin offsets in those terms too?
+    /* If lengthB is negative (huge), it means the (hacked) left-hand expression ends *after*
+     * the right-hand one begins, i.e. rewriting extended the left-hand expression by more than
+     * the original distance between LH-end and RH-begin. FIXME: can this still happen? */
     unsigned lengthC = offsetHackedEndOuter - offsetHackedEndSubRight;
-
     static const unsigned MAXIMUM_SANE_LENGTH = 10000;
     llvm::errs() << "Replacee fragments have lengths " << lengthA << ", " << lengthB << ", "
       << lengthC << "\n";
     assert(lengthA < MAXIMUM_SANE_LENGTH);
     assert(lengthB < MAXIMUM_SANE_LENGTH);
     assert(lengthC < MAXIMUM_SANE_LENGTH);
-    llvm::errs() << "Expressions (outer, l, r) have file begin offsets " << offsetBeginOuter << ", " << offsetBeginSubLeft << ", "
-    << offsetBeginSubRight << "\n";
-    llvm::errs() << "Expressions (outer, l, r) have file end offsets " << offsetEndOuter << ", " << offsetEndSubLeft << ", "
-    << offsetEndSubRight << "\n";
-    llvm::errs() << "Expressions (outer, l, r) have hacked file end offsets " << offsetHackedEndOuter << ", " << offsetHackedEndSubLeft << ", "
-    << offsetHackedEndSubRight << "\n";
-    Rewriter::RewriteOptions notBegin; notBegin.IncludeInsertsAtBeginOfRange = false;
+    llvm::errs() << "Expressions (outer, l, r) have file begin offsets " << offsetBeginOuter
+        << ", " << offsetBeginSubLeft << ", " << offsetBeginSubRight << "\n";
+    llvm::errs() << "Expressions (outer, l, r) have file end offsets " << offsetEndOuter
+        << ", " << offsetEndSubLeft << ", " << offsetEndSubRight << "\n";
+    llvm::errs() << "Expressions (outer, l, r) have hacked file end offsets " 
+        << offsetHackedEndOuter
+        << ", " << offsetHackedEndSubLeft << ", " << offsetHackedEndSubRight << "\n";
+    // FIXME: does this do anything? It seems dead.
+    Rewriter::RewriteOptions notBegin;
+    notBegin.IncludeInsertsAtBeginOfRange = false;
+    /* Recall our picture:
+             AAAAA        BBBBB        CCCCCC
+                     p      [     off     ]
+             XXXXX __e1__ YYYYY __e2__ ZZZZZZ
+             `------------eOuter------------'
+     */
     if (lengthA > 0) TheRewriter.RemoveText(eOuter->getSourceRange().getBegin(),
       lengthA);
     // inserting before the beginning of the left range does not do not what we want;
-    //   the inserted text is included in the left expression's range after the rewrite.
-    TheRewriter.InsertTextBefore(eSubLeft->getSourceRange().getBegin(),
-      replacementA);
-    // try inserting "after" the beginning of eOuter?
-    //TheRewriter.InsertText(eOuter->getSourceRange().getBegin(),
-    //  replacementA, true);
-    // No, that does the same thing! ARGH! Try inserting "not after"?
-    //TheRewriter.InsertText(eOuter->getSourceRange().getBegin(),
-    //  replacementA, false);
-    // No, that does the same thing too. Am I sure that ReplaceText didn't do the right thing?
+    //   the inserted text is included in the left expression's range after the rewrite,
+    // i.e. it's more like "at the beginning" than "before the beginning".
+    // try inserting "after" eOuter's getSourceRange().getBegin()?
+    // No, that does the same thing
+    // Try inserting "not after", i.e. passing "false" to the 3-args InsertText?
+    // No, that does the same thing too. What about?
     //TheRewriter.ReplaceText(eOuter->getSourceRange().getBegin(),
     //  lengthA,
     //  replacementA);
-    // No, that turned "__a" into "__m" i.e. rebound the left expr's location to the replacement
+    // No, that turned "__a" into "__m" i.e. remapped the left subexpr's start to the replacement
+    // (because here the left subexpression begins at the same place as the outer expression).
     // What about doing the insertion *then* doing the removal?
-    TheRewriter.ReplaceText(eSubLeft->getSourceRange().getBegin().getLocWithOffset(offsetHackedEndSubLeft - offsetBeginSubLeft),
+    // Using InsertTextBefore, this seems to do the right thing.
+    TheRewriter.InsertTextBefore(eSubLeft->getSourceRange().getBegin(),
+      replacementA);
+    TheRewriter.ReplaceText(
+      eSubLeft->getSourceRange().getBegin()
+        .getLocWithOffset(offsetHackedEndSubLeft - offsetBeginSubLeft),
       lengthB,
       replacementB);
-    
-    
-    TheRewriter.ReplaceText(eSubRight->getSourceRange().getBegin().getLocWithOffset(offsetHackedEndSubRight - offsetBeginSubRight),
+    TheRewriter.ReplaceText(
+      eSubRight->getSourceRange().getBegin()
+        .getLocWithOffset(offsetHackedEndSubRight - offsetBeginSubRight),
       lengthC,
       replacementC);
     llvm::errs() << "Now left-hand subexpression is:  `"
@@ -270,64 +275,6 @@ public:
       }
       parents = TheContext.getParents(*parentNode);
     }
-//       for (auto it = parents.begin(); it != parents.end(); ++it)
-//       do {
-//         llvm::errs() << "Parent of ";
-//         //s->dump();
-//         s->printPretty(llvm::errs(), nullptr, PrintingPolicy(LangOptions()));
-//         llvm::errs() << " is ";
-//       if (it == TheContext.getParents(*s).end())
-//       {
-//         llvm::errs() << "empty!\n";
-//       }
-//       else
-//       {
-//         llvm::errs() << "a " << it->getNodeKind().asStringRef() << "\n";
-//         const clang::Decl *aDecl = it->get<clang::Decl>();
-//         if (aDecl)
-//         {
-//           llvm::errs() << "Really! Parent is a Decl\n";
-//           break;
-//         }
-// 
-//         const clang::Stmt *aStmt = it->get<clang::Stmt>();
-//         if (aStmt)
-//         {
-//           llvm::errs() << "Really! Parent is Stmt\n";
-//           break;
-//         }
-// 
-//         //Type, TypeLoc, NestedNameSpecifier or NestedNameSpecifierLoc. 
-//         const clang::Type *aType = it->get<clang::Type>();
-//         if (aType)
-//         {
-//           llvm::errs() << "Really! Parent is a Type\n";
-//           break;
-//         }
-//         const clang::TypeLoc *aTypeLoc = it->get<clang::TypeLoc>();
-//         if (aTypeLoc)
-//         {
-//           llvm::errs() << "Really! Parent is a TypeLoc\n";
-//           break;
-//         }
-//         const clang::NestedNameSpecifier *aNestedNameSpecifier = it->get<clang::NestedNameSpecifier>();
-//         if (aNestedNameSpecifier)
-//         {
-//           llvm::errs() << "Really! Parent is a NestedNameSpecifier\n";
-//           break;
-//         }
-//         const clang::NestedNameSpecifierLoc *aNestedNameSpecifierLoc = it->get<clang::NestedNameSpecifierLoc>();
-//         if (aNestedNameSpecifierLoc)
-//         {
-//           llvm::errs() << "Really! Parent is a NestedNameSpecifierLoc\n";
-//           break;
-//         }
-// 
-//         llvm::errs() << "Really? Parent is something else\n";
-//       }
-//     } while(0);
-
-  
     if (isa<ArraySubscriptExpr>(s)) {
       /* There are two cases:
        * (1) it's really the builtin array subscript;
@@ -363,14 +310,6 @@ public:
           ")"
         );
         // after replacement, we should still have the same view of the subexpressions
-        /* HOW can we possibly arrange this?
-         *  -- the rewrite buffer needs to know what partof the replacement
-         *     corresponds to the old subexpression
-         *  -- if all we have is deletions and insertions, that's difficult
-         *  -- can we delete the 
-         * WHY is it so important?
-         *    
-         */
         assert(e->getLHS()->getSourceRange().getBegin() == e->getSourceRange().getBegin()
         || lhBefore == GetReplacedText(e->getLHS()));
         assert(rhBefore == GetReplacedText(e->getRHS()));
@@ -396,36 +335,6 @@ public:
     }
     return true;
   }
-
-//   bool VisitFunctionDecl(FunctionDecl *f) {
-//     // Only function definitions (with bodies), not declarations.
-//     if (f->hasBody()) {
-//       Stmt *FuncBody = f->getBody();
-// 
-//       // Type name as string
-//       QualType QT = f->getReturnType();
-//       std::string TypeStr = QT.getAsString();
-// 
-//       // Function name
-//       DeclarationName DeclName = f->getNameInfo().getName();
-//       std::string FuncName = DeclName.getAsString();
-// 
-//       // Add comment before
-//       std::stringstream SSBefore;
-//       SSBefore << "// Begin function " << FuncName << " returning " << TypeStr
-//                << "\n";
-//       SourceLocation ST = f->getSourceRange().getBegin();
-//       //TheRewriter.InsertText(ST, SSBefore.str(), true, true);
-// 
-//       // And after
-//       std::stringstream SSAfter;
-//       SSAfter << "\n// End function " << FuncName;
-//       ST = FuncBody->getLocEnd().getLocWithOffset(1);
-//       //TheRewriter.InsertText(ST, SSAfter.str(), true, true);
-//     }
-// 
-//     return true;
-//   }
 
 private:
   Rewriter &TheRewriter;
@@ -454,7 +363,6 @@ public:
     llvm::errs() << ", end ";
     C.getTranslationUnitDecl()->getSourceRange().getEnd().print(llvm::errs(), R.getSourceMgr());
     llvm::errs() << "\n";
-    
   }
 
   // Override the method that gets called for each parsed top-level
@@ -525,10 +433,13 @@ private:
 };
 
 /* Clang wants a "compilations database" and a "source path list".
- * Since we mimic the gcc command-line interface and so (mostly)
+ * We want to mimic the gcc command-line interface; since so (mostly)
  * does clang, we should be able to get what we want from libclang
  * code. How does it parse its argc and argv? Where is the clang
- * main(), even? It's in clang/tools/driver
+ * main(), even? It's in clang/tools/driver.
+ * HACK: for now, don't mimic gcc's command line. Just use the
+ * LLVM common options format, and let our wrapper script adapt.
+ * (But see Attic/options.cpp for a partial attempt at the original.)
  */
 static llvm::cl::OptionCategory CCCPPPCategory("CCCPPP");
 
