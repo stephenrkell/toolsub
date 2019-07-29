@@ -1,55 +1,13 @@
 #!/bin/bash
-# FIXME: rewrite this in C, or at least as a POSIX shell script.
 
-# Using gcc's -wrapper option, the compiler driver will invoke
-# us instead of cpp, cc1, etc., with the full command path as
-# $1. We want to substitute cilpp in the right places.
-# NOTE: this whole thing is necessary only because the driver
-# does not want to run `cpp' ever... it uses cc1 -E.
-#
-# clang does not (last I checked) support -wrapper, but I
-# imagine it's only a matter of time.
-
-# If we are symlinked under a name ending '-cflags', '-cppflags',
-# '-ldflags' etc, we print out the options that one should pass
-# to the compiler for the wrapper to be employed. So you can do
-#
-# gcc `/path/to/cilpp/cilpp-cflags` <... normal gcc args...>
-#
-# to run with cilpp.
-case "$0" in
-    (*cxxflags|*cppflags)
-        /bin/echo -no-integrated-cpp -wrapper "$(readlink -f "$(dirname "$0")")"/wrapper
-        exit 0
-    ;;
-    (*ldflags)
-        # we don't interfere with linking, so no extra ldflags
-        exit 0
-    ;;
-    (*) # silently continue, i.e. actually act as the wrapper command
-    ;;
-esac
-
+# set ourselves as the wrapper
+WRAPPER="$0"
 . "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
 
-debug_print 1 "\$1 is $1" 1>&2
+# cpp is expanded without quotes, so it can generate multiple command-line words
+# ... so anything that needs protecting should be escape-quoted
+CPP="$(dirname "$0")/cccppp"
+echo "CPP is $CPP" 1>&2
 
-cmd_to_run="$1"
-case "$cmd_to_run" in
-    (*/cc1plus)
-        ctr=0
-        # if we're only preprocessing, or if we have no explicit output file, just run cc1
-        if ! is_pp "$@"; then
-            debug_print 1 "Running non-substituted: $@" 1>&2
-            exec "$@"
-        else
-            # run cilpp, which should take care of the temporary file thing
-            scrape_cpp_options_from_cc1_command "$@"
-            debug_print 1 "$(dirname "$0")"/cccppp "${cpp_options[@]}" 1>&2
-            exec "$(dirname "$0")"/cccppp "${cpp_options[@]}"
-        fi
-        ;;
-    (*) debug_print 1 "Non-wrapping: $@" 1>&2
-        exec "$@"
-        ;;
-esac
+# delegate to the generic wrapper -- we've set WRAPPER so it won't re-source the funcs
+. "$(dirname "$0")/../../wrapper/bin/wrapper"

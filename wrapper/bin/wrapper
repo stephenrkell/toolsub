@@ -18,7 +18,7 @@
 #
 # to run with the alternative cpp.
 case "$0" in
-    (*cflags|*cppflags)
+    (*cflags|*cppflags|*cxxflags)
         /bin/echo -no-integrated-cpp -wrapper "$(readlink -f "$(dirname "$0")")"/wrapper
         exit 0
     ;;
@@ -41,7 +41,7 @@ debug_print 1 "\$1 is $1" 1>&2
 CPP="${CPP:-cpp}"
 cmd_to_run="$1"
 case "$cmd_to_run" in
-    (*/cc1)
+    (*/cc1|*/cc1plus)
         ctr=0
         # if we're only preprocessing, or if we have no explicit output file, just run cc1
         if ! is_pp "$@"; then
@@ -51,8 +51,13 @@ case "$cmd_to_run" in
             declare -a cpp_options
             write_cpp_options_from_cc1_options "$@"
             debug_print 1 "Scraped cpp options: [${cpp_options[@]}]" 1>&2
-            debug_print 1 "$CPP" "${cpp_options[@]}" 1>&2
-            exec $CPP "${cpp_options[@]}"
+            debug_print 1 "Command:" $CPP "${cpp_options[@]}" 1>&2
+            # If CPP embeds quoted phrases, just doing $CPP here doesn't work
+            # because quote removal only removes quote "present in the original word".
+            # Instead we exploit a hack: if CPP is set as a single string and not
+            # an array, it still expands correctly if we use [@]. So allow CPP to
+            # be set as an array.
+            exec "${CPP[@]}" "${cpp_options[@]}"
         fi
         ;;
     (*) debug_print 1 "Non-wrapping: $@" 1>&2
