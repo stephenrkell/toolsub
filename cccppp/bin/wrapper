@@ -7,7 +7,6 @@ WRAPPER="$0"
 # cpp is expanded without quotes, so it can generate multiple command-line words
 # ... so anything that needs protecting should be escape-quoted
 CPP="$(dirname "$0")/cccppp"
-echo "CPP is $CPP" 1>&2
 
 # delegate to the generic wrapper -- we've set WRAPPER so it won't re-source the funcs
 . "$(dirname "$0")/../../wrapper/bin/wrapper"
