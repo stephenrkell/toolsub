@@ -1,32 +1,17 @@
+# we want it to be possible to write wrappers
+# as shell functions, not just commands.
+do_exec () {
+#    exec "$@"
+    "$@"
+    status=$?
+    exit $status
+}
+
 debug_print () {
     lvl="$1"
     shift
     if [[ "$DEBUG_CC" -ge $lvl ]]; then
         echo "$@"
-    fi
-}
-
-is_pp () {
-    saw_pp=0
-    outpos=0
-    declare -a seen_args
-    while shift; do
-        ctr="$(( $ctr + 1 ))"
-        seen_args[$ctr]="$1"
-        if [[ -z "$1" ]]; then continue; fi
-        case "$1" in
-         (-o) outfile="$2"; outpos="$(( $ctr + 1 ))";;
-         (-E) saw_pp=1 ;;
-        esac
-    done
-    # if we're only preprocessing, or if we have no explicit output file, just run cc1
-    # FIXME: why the "no explicit output file" rule? Seems like a hole in our coverage.
-    if [ "$saw_pp" -eq 0 ] || [ $outpos -eq 0 ]; then
-        debug_print 1 "Wrapping cc1, we don't seem to be doing preprocessing." 1>&2
-        false
-    else
-        debug_print 1 "Wrapping cc1, we seem to be doing a preprocessing step; args ${seen_args[@]}" 1>&2
-        true
     fi
 }
 
@@ -46,6 +31,7 @@ run_with_replacement_outfile () {
     "${args[@]}"
 }
 
+# FIXME: replace this with use of norm_cc1_options
 run_with_replacement_infile () {
     # Scan a command line, identify the input file and replace it with $1
     # PROBLEM: how do we identify the input filename?
@@ -103,17 +89,42 @@ guess_driver () {
 # by the standalone cpp, so we have to filter these out.
 
 
-# This whole approach is hacky and fragile.
-# We are forcing a "drop-in cpp replacement" when in fact, when
+# We want to allow a "drop-in cpp replacement" when in fact, when
 # compiling C code, even with -no-integrated-cpp, cpp /per se/ is never run.
 # Rather, a separate cc1 invocation is done... but the details of its command
 # line are rather compiler-specific. It would be more robust simply to run
 # that command to get our preprocessing done, and fit our extra processing
 # as pre- and/or post-passes.
+# FIXME: this function could almost be a "normalize_cc1_options" function...
+# not much is specific to producing cpp options as output. What *is* specific
+# to that is the "filter out non-cpp args" step.
 write_cpp_options_from_cc1_options () {
-    debug_print 1 "outpos is $outpos" 1>&2
-    debug_print 1 "outfile is $outfile" 1>&2
+    declare -a norm_cc1_options
+    normalize_cc1_options "$@"
+    do_write_cpp_options "${norm_cc1_options[@]}"
+}
+do_write_cpp_options () {
+    ctr=0
+    while shift || break; do
+        debug_print 1 "\$# is $#, \$1 is '$1'" 1>&2
+        if [[ $# -eq 0 ]]; then break; fi
+        case "$1" in
+            # we are running our own cpp-alike -- filter out non-cpp args
+            (-imultiarch|-iremap*) shift || break ;; # skip arg too
+            (-quiet|-fhonour-copts) ;; # skip just it
+            (*)
+                debug_print 1 "Snarfing $1" 1>&2
+                cpp_options[$ctr]="$1"
+                ctr=$(( $ctr + 1 ))
+            ;;
+        esac
+    done
+}
+
+declare -a possible_infiles
+normalize_cc1_options () {
     prev_arg=""
+    inctr=0
     ctr=0
     saw_MD=""
     mf_opt=""
@@ -124,12 +135,10 @@ write_cpp_options_from_cc1_options () {
     saw_Werror=""
     saw_D_FORTIFY_SOURCE=""
     while shift || break; do
-        debug_print 1 "\$# is $#, \$1 is '$1'" 1>&2
         if [[ $# -eq 0 ]]; then break; fi
+        debug_print 1 "\$# is $#, \$1 is '$1'" 1>&2
+        not_infile=""
         case "$1" in
-            # we are running our own cpp-alike -- filter out non-cpp args
-            (-imultiarch|-iremap*) shift || break ;; # skip arg too
-            (-quiet|-fhonour-copts) ;; # skip just it
             (-MD|-MMD)
                 # with cc1, -MD and -MMD always take an argument.
                 # with cpp, they never do.
@@ -138,32 +147,54 @@ write_cpp_options_from_cc1_options () {
                 mf_file="$2"
                 saw_md="$1"
                 shift
-            ;;
+            ;; # don't keep matching
             (-MF|-MMF)
                 mf_opt="$1"
                 mf_file="$2"
                 shift
-            ;;
+            ;; # don't keep matching
             (-o)
                 outfile="$2"
                 shift
-            ;;
-            (-E) saw_E=1
-                ;;& # then fall through
+            ;; # don't keep matching
+            (-E) saw_E=1;
+                ;;& # then keep matching
             (-Os) saw_Os=1
-                ;;& # then fall through
+                ;;& # then keep matching
             (-Werror) saw_Werror=1
-                ;;& # then fall through
+                ;;& # then keep matching
             (-D_FORTIFY_SOURCE|-D_FORTIFY_SOURCE=*) saw_D_FORTIFY_SOURCE=1; pos_D_FORTIFY_SOURCE=$ctr
-                ;;& # then fall through
+                ;;& # then keep matching
             (_FORTIFY_SOURCE|_FORTIFY_SOURCE=*)
                 if [[ "$prev_arg" == "-D" ]]; then
                     saw_D_FORTIFY_SOURCE=1; pos_D_FORTIFY_SOURCE=$(( $ctr - 1 ))
                 fi
-                ;;& # then fall through
+                ;;& # then keep matching
+            (-) # it denotes stdin, so could be an infile
+                # (the case of a stdout outfile was handled above)
+                possible_infiles[$inctr]="$1"
+                inctr=$(( $inctr + 1 ))
+            ;;& # then keep matching
+            (-*) # looks like an option, so assume it's NOT an infile
+                 # though FIXME: that could be wrong if we've seen '--' (does gcc accept this?)
+            ;;&
+            ([^-]*)
+                # FIXME: this is super-imprecise.
+                # A useful regex for scraping the gcc man page for opts-with-args:
+                # -[-a-z0-9]+ [^-[:blank:]]
+                case "$prev_arg" in
+                    (-D|-U|-x|-aux-info|-dumpbase|-auxbase|-I|-i[a-z]*|-X*|-u|-T|--param|-G)
+                    ;; # it's the opt's arg
+                    (*)
+                        # it may be an input file
+                        possible_infiles[$inctr]="$1"
+                        inctr=$(( $inctr + 1 ))
+                    ;;
+                esac
+            ;;&
             (*)
                 debug_print 1 "Snarfing $1" 1>&2
-                cpp_options[$ctr]="$1"
+                norm_cc1_options[$ctr]="$1"
                 ctr=$(( $ctr + 1))
             ;;
         esac
@@ -171,27 +202,27 @@ write_cpp_options_from_cc1_options () {
     done
     # re-add -o
     if [[ -n "$outfile" ]]; then
-        cpp_options[$ctr]="-o"
+        norm_cc1_options[$ctr]="-o"
         ctr=$(( $ctr + 1))
-        cpp_options[$ctr]="$outfile"
+        norm_cc1_options[$ctr]="$outfile"
         ctr=$(( $ctr + 1))
     fi
     # figure out -MD -MMD -MF -MMF
     if [[ -n "$mf_opt" ]]; then
         case "$saw_md" in
             (-MMD)
-                cpp_options[$ctr]="-MM"
+                norm_cc1_options[$ctr]="-MM"
                 ctr=$(( $ctr + 1 ))
             ;;
             (-MD)
-                cpp_options[$ctr]="-M"
+                norm_cc1_options[$ctr]="-M"
                 ctr=$(( $ctr + 1 ))
             ;;
             (*) ;;
         esac
-        cpp_options[$ctr]="$( echo "$mf_opt" | sed 's/D$/F/' )"
+        norm_cc1_options[$ctr]="$( echo "$mf_opt" | sed 's/D$/F/' )"
         ctr=$(( $ctr + 1)) 
-        cpp_options[$ctr]="$mf_file"
+        norm_cc1_options[$ctr]="$mf_file"
         ctr=$(( $ctr + 1))
     fi
     # if we saw -Os and -Werror and -D_FORTIFY_SOURCE, then we have a problem:
@@ -203,16 +234,60 @@ write_cpp_options_from_cc1_options () {
     if [[ -n "$saw_Os" ]] && [[ -n "$saw_Werror" ]] & [[ -n "$saw_D_FORTIFY_SOURCE" ]]; then
         # another HACK: to handle separate "-D" and "_FORTIFY_SOURCE", we only assume that
         # the pos records where the "-D" is
-        case "${cpp_options[$pos_D_FORTIFY_SOURCE]}" in
+        case "${norm_cc1_options[$pos_D_FORTIFY_SOURCE]}" in
             (-D) # rewrite the next one too
-                cpp_options[$pos_D_FORTIFY_SOURCE]="-U"
-                cpp_options[$(( $pos_D_FORTIFY_SOURCE + 1 ))]="$( echo "${cpp_options[$(( $pos_D_FORTIFY_SOURCE + 1 ))]}" | sed 's/=.*//' )"
+                norm_cc1_options[$pos_D_FORTIFY_SOURCE]="-U"
+                norm_cc1_options[$(( $pos_D_FORTIFY_SOURCE + 1 ))]="$( echo "${norm_cc1_options[$(( $pos_D_FORTIFY_SOURCE + 1 ))]}" | sed 's/=.*//' )"
             ;;
             (-D_FORTIFY_SOURCE*)
-                cpp_options[$pos_D_FORTIFY_SOURCE]="$( echo "${cpp_options[$pos_D_FORTIFY_SOURCE]}" | sed 's/-D/-U/' | sed 's/=.*//' )"
+                norm_cc1_options[$pos_D_FORTIFY_SOURCE]="$( echo "${norm_cc1_options[$pos_D_FORTIFY_SOURCE]}" | sed 's/-D/-U/' | sed 's/=.*//' )"
             ;;
         esac
     fi
+}
+
+# FIXME: this is pasted from our constructor-priority-checker
+# where it used to be an assembler wrapper... we switched to
+# wrapping cc1, but this code could prove useful for when
+# assembler-wrapping is actually needed.
+parse_as_command () {
+    echo "My as: $@" 1>&2
+    as="$1"
+    shift
+    declare -a args
+    for a in `seq 1 $(( $# - 1 ))`; do
+        args=[$ctr]="${!a}"
+    done
+    declare -a as_options
+    ctr=0
+    while expr match "$1" '^-.*' >/dev/null; do
+        as_options[$ctr]="$1"
+        ctr=$(( $ctr + 1 ))
+        case "$1" in
+            ('--')  # no more opts
+                shift; break
+            ;;
+            # options taking a non-option-looking argument
+            ('-o')
+                outfile="$2"
+            ;;&
+            (--debug-prefix-map|-I|--MD|-o)
+                as_options[$ctr]="$2"
+                ctr=$(( $ctr + 1 ))
+                shift
+            ;;
+            (-*)
+                # some other option
+            ;;
+            (*) # error!
+                echo "Blah!"
+                false
+            ;;
+        esac
+        shift || break
+    done
+    #echo "Doing: ${AS:-as} ${as_options[@]} $@" 1>&2
+    #"${as}" "${as_options[@]}" "$@"
 }
 
 # our "include guard": once WRAPPER is set, client scripts won't source us

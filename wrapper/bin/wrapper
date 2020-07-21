@@ -38,29 +38,109 @@ fi
 
 debug_print 1 "\$1 is $1" 1>&2
 
-CPP="${CPP:-cpp}"
+cc1_command_is_pp () {
+    saw_pp=0
+    outpos=0
+    declare -a seen_args
+    while shift; do
+        ctr="$(( $ctr + 1 ))"
+        seen_args[$ctr]="$1"
+        if [[ -z "$1" ]]; then continue; fi
+        case "$1" in
+         (-o) outfile="$2"; outpos="$(( $ctr + 1 ))";;
+         (-E) saw_pp=1 ;;
+        esac
+    done
+    # If we didn't see an output file, it might mean that -pipe is being used?
+    # FIXME: support this case once we've seen an example.
+    if [ $outpos -eq 0 ]; then
+        echo "FIXME: can't work with cc1/cc1plus commands with no output file" 1>&2
+        exit 1
+    fi
+    # if we're only preprocessing, or if we have no explicit output file, just run cc1
+    if [ "$saw_pp" -eq 0 ]; then
+        debug_print 1 "Wrapping cc1, we don't seem to be doing preprocessing; args ${seen_args[@]}" 1>&2
+        false
+    else
+        debug_print 1 "Wrapping cc1, we seem to be doing a preprocessing step; args ${seen_args[@]}" 1>&2
+        true
+    fi
+}
+
+# In general, we want to run the command that the driver is running.
+# But there are some exceptions to do with the C preprocessor.
+# In short, to hook preprocessing, although we could wrap the GCC-private
+# cc1/cc1plus command, we'd rather wrap the well-documented "cpp"
+# command. So we transform a preprocessing cc1/cc1plus call's args into
+# args that work for a cpp call.
 cmd_to_run="$1"
 case "$cmd_to_run" in
     (*/cc1|*/cc1plus)
         ctr=0
         # if we're only preprocessing, or if we have no explicit output file, just run cc1
-        if ! is_pp "$@"; then
-            debug_print 1 "Running non-substituted: $@" 1>&2
-            exec "$@"
+        if ! cc1_command_is_pp "$@"; then
+            debug_print 1 "cc1-wrapping: $@" 1>&2
+            # run the args through normalize_cc1_options anyway
+            declare -a norm_cc1_options
+            normalize_cc1_options "$@"
+            # FIXME: instead of 'normalizing' cc1 options but then still
+            # passing a cc1 command line out to a cc1 wrapper, we should be
+            # consistent with how we wrap 'cpp': rewrite the command line
+            # so that it can be passed back through the driver but will
+            # only run a single tool. In other words, our clients should
+            # never have to worry about the peculiarities of cc1; they should
+            # simply wrap the documented cc/cpp/... command lines.
+
+            # if CC1WRAP is set, use ${CC1WRAP} $1
+            CC1WRAP="${CC1WRAP:+${CC1WRAP} ${cmd_to_run}}"
+            # now if CC1WRAP is still not set, just use $1 (but also shift)
+            if [[ -z "$CC1WRAP" ]]; then
+                CC1WRAP="${cmd_to_run}"
+                shift # we don't need the cc1 argument any more
+            fi
+            debug_print 1 "Command:" $CPPWRAP "$@" 1>&2
+            do_exec ${CC1WRAP} "$@"
         else
+            # convert the cc1/cc1plus options to cpp options
             declare -a cpp_options
+            # this will shift $cmd_to_run off the front before it does anything
             write_cpp_options_from_cc1_options "$@"
             debug_print 1 "Scraped cpp options: [${cpp_options[@]}]" 1>&2
-            debug_print 1 "Command:" $CPP "${cpp_options[@]}" 1>&2
-            # If CPP embeds quoted phrases, just doing $CPP here doesn't work
-            # because quote removal only removes quote "present in the original word".
-            # Instead we exploit a hack: if CPP is set as a single string and not
-            # an array, it still expands correctly if we use [@]. So allow CPP to
-            # be set as an array.
-            exec "${CPP[@]}" "${cpp_options[@]}"
+            # if CPPWRAP is set, use ${CPPWRAP} cpp
+            CPPWRAP="${CPPWRAP:+${CPPWRAP} ${CPP:-cpp}}"
+            # now if CPPWRAP is still not set, just use cpp
+            CPPWRAP="${CPPWRAP:-${CPP:-cpp}}"
+            # FIXME: there's a versioning problem here that we can't ignore.
+            # If we just call "cpp" we don't ensure a version-matched preprocessor,
+            # and that matters as the default -std=xxx changes over time.
+            # In cilpp, or actually in wrapper/compiler_args.ml, we hack
+            # around it by accepting a '-driver' option which CPPWRAP passes to
+            # clipp. If neither -std=xxx nor -driver is given, it's an error.
+            # Then to simulate cpp, one might think we can do "$driver -E", but
+            # not so: must hack around the use of -MD which is different on the
+            # driver command line than on the cpp command line (see GCC bug 91025).
+            # So that solution is in OCaml code, but arguably it belongs here, and
+            # we should guarantee CPPWRAP that we never pass it -MD.
+            # FIXME: I *think* this is even done already, in
+            # write_cpp_options_from_cc1_options... so try removing the code
+            # in compiler_opts.ml and replacing with an assertion? Not clear
+            # that's the right move, because cilpp should be a generic drop-in
+            # replacement, i.e. shouldn't need to be invoked from this wrapper.
+            debug_print 1 "Command:" $CPPWRAP "${cpp_options[@]}" 1>&2
+            do_exec ${CPPWRAP} "${cpp_options[@]}"
         fi
         ;;
+    (as|*/as)
+        debug_print 1 "as-wrapping: $@" 1>&2
+        orig_cmd="$1"
+        shift
+        # if ASWRAP is set, use ${ASWRAP} $1
+        ASWRAP="${ASWRAP:+${ASWRAP} ${orig_cmd}}"
+        # now if ASWRAP is still not set, just use $1
+        ASWRAP="${ASWRAP:-${orig_cmd}}"
+        do_exec ${ASWRAP} "$@"
+        ;;
     (*) debug_print 1 "Non-wrapping: $@" 1>&2
-        exec "$@"
+        do_exec "$@"
         ;;
 esac

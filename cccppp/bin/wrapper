@@ -4,8 +4,6 @@
 WRAPPER="$0"
 . "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
 
-# cpp is expanded without quotes, so it can generate multiple command-line words
-# ... so anything that needs protecting should be escape-quoted
 CPP="$(dirname "$0")/cccppp"
 
 # delegate to the generic wrapper -- we've set WRAPPER so it won't re-source the funcs

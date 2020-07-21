@@ -5,12 +5,14 @@ WRAPPER="$0"
 # source the wrapper funcs
 . "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
 
-# cpp is expanded without quotes, so it can generate multiple command-line words
-# ... so anything that needs protecting should be escape-quoted
-declare -a CPP
-CPP[0]="$(dirname "$0")"/cilpp
-CPP[1]="-driver"
-CPP[2]="$(guess_driver)"
+my_cpp () {
+    cmd="$1"
+    shift
+    driver="$(guess_driver)"
+    echo "Running cilpp with args: "-driver" "$driver" $@" 1>&2
+    do_exec "$(dirname "$0")"/cilpp "-driver" "$driver" "$@"
+}
+CPPWRAP=my_cpp
 
 # delegate to the generic wrapper -- we've set WRAPPER so it won't re-source the funcs
 . "$(dirname "$0")/../../wrapper/bin/wrapper"
