@@ -106,26 +106,27 @@ case "$cmd_to_run" in
             # this will shift $cmd_to_run off the front before it does anything
             write_cpp_options_from_cc1_options "$@"
             debug_print 1 "Scraped cpp options: [${cpp_options[@]}]" 1>&2
-            # if CPPWRAP is set, use ${CPPWRAP} cpp
-            CPPWRAP="${CPPWRAP:+${CPPWRAP} ${CPP:-cpp}}"
-            # now if CPPWRAP is still not set, just use cpp
-            CPPWRAP="${CPPWRAP:-${CPP:-cpp}}"
-            # FIXME: there's a versioning problem here that we can't ignore.
-            # If we just call "cpp" we don't ensure a version-matched preprocessor,
-            # and that matters as the default -std=xxx changes over time.
-            # In cilpp, or actually in wrapper/compiler_args.ml, we hack
-            # around it by accepting a '-driver' option which CPPWRAP passes to
-            # clipp. If neither -std=xxx nor -driver is given, it's an error.
-            # Then to simulate cpp, one might think we can do "$driver -E", but
-            # not so: must hack around the use of -MD which is different on the
+            # Morally, we want to "just call" cpp. But there's a versioning problem
+            # with that.  If we just call "cpp" we're not ensuring a preprocessor that
+            # is version-matched with the compiler. That matters because, among other
+            # things, the default -std=xxx changes over time, but it's essential that
+            # the same C standard is used by compiler and preprocessor (and yes, C
+            # standard evolution has changed how preprocessing works in some edge cases).
+            # Instead of running "cpp", we run "$driver -E". Even that is not simple:
+            # we must hack around the use of -MD, whose meaning is different on the
             # driver command line than on the cpp command line (see GCC bug 91025).
-            # So that solution is in OCaml code, but arguably it belongs here, and
-            # we should guarantee CPPWRAP that we never pass it -MD.
-            # FIXME: I *think* this is even done already, in
-            # write_cpp_options_from_cc1_options... so try removing the code
-            # in compiler_opts.ml and replacing with an assertion? Not clear
-            # that's the right move, because cilpp should be a generic drop-in
-            # replacement, i.e. shouldn't need to be invoked from this wrapper.
+            # In short, we normalize the command line so it never uses -M?MD, always
+            # using -M?MF as necessary, so is unambiguous... in other words, a cpp-like
+            # command line can be assumed by CPPWRAP program.
+            # The same "driver" trick is replicated in cilpp's OCaml code, but we pass
+            # it the driver as a special "-driver" option, to save it from scraping the
+            # parent pid. If a -std=xxx option is given explicitly, this is redundant.
+            # We could simplify cilpp by simply guaranteeing to cilpp, or any CPPWRAP
+            # program, that we never pass it -MD. However, I want to keep cilpp a generic
+            # drop-in(-mostly) replacement, rather than couple it to this wrapper.
+            CPPWRAP="${CPPWRAP:+${CPPWRAP} ${CPP:-$(guess_driver) -E}}"
+            # now if CPPWRAP is still not set, just use cpp
+            CPPWRAP="${CPPWRAP:-${CPP:-$(guess_driver) -E}}"
             debug_print 1 "Command:" $CPPWRAP "${cpp_options[@]}" 1>&2
             do_exec ${CPPWRAP} "${cpp_options[@]}"
         fi
