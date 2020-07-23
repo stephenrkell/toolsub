@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# HACK: know where to find toolsub
+TOOLSUB="${TOOLSUB:-/usr/local/src/liballocs/contrib/toolsub}"
+
+# set ourselves as the wrapper
+WRAPPER="$0"
+# source the wrapper funcs
+. "${WRAPPER_FUNCS:-${TOOLSUB}/wrapper/lib/wrapper-funcs.sh}"
+
+# Our check works by observing a single cc1 invocation...
+# already-preprocessed source goes in, and assembly comes out.
+# We cross-check each. We pass the cc1 preprocessed input
+# to a CIL tool that dumps the with-priority constructors.
+# Then we check that the assembly output contains the expected
+# incantations in each case. If it doesn't, we flag an warning.
+my_cc1 () {
+    # drop the literal "cc1" argument
+    shift
+    # run the compiler
+    "$@"
+    # Now do our check... our caller has told us what infiles and outfile are
+    for f in "${infiles[@]}"; do
+        case "$f" in
+            (*.i|*.ii)
+                # use the CIL tool to find out what priorities are at source level
+                constrs="$( "$(dirname "$0")"/dumpconstr "$f" )"
+                # for each one, check the assembly agrees
+                while read func constr prio; do
+                    if [[ -n "$prio" ]]; then
+                        # the symbol should be referenced in a section
+                        # named ".init_array.0*%04d"
+                        # where %04d is the priority, zero-padded
+                        regex="^\.init_array(\.0*([0-9]+))?.*[[:blank:]]$func[[:blank:]]*\v"
+                        section="$( sed 's/^[[:blank:]]*\.section[[:blank:]]*/\f/g' "$outfile" | \
+                            tr '\n' '\v' | tr '\f' '\n' | \
+                            sed -rn "/$regex/ p" )"
+                        actual_prio="$( echo "$section" | sed -nr "/$regex/ {s//\2/;p}" )"
+                        if ! [ ${actual_prio:-0} -eq $prio ]; then
+                            echo "Error: inconsistent use of constructor attributes on function $func" 1>&2
+                            exit 1 
+                        fi
+                    fi
+                done <<<"$constrs"
+                # we process at most one input file
+                break
+            ;;
+            (*) # skip files that don't look like preprocessed C/C++
+            ;;
+        esac
+    done
+}
+CC1WRAP=my_cc1
+
+# delegate to the generic wrapper -- we've set WRAPPER so it won't re-source the funcs
+. ${TOOLSUB}/wrapper/bin/wrapper
