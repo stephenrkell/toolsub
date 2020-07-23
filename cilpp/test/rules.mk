@@ -3,7 +3,7 @@ CILPP_PREFIX ?= $(realpath $(dir $(THIS_MAKEFILE))/..)
 
 BASIC_CFLAGS += -save-temps
 
-# We build all our tests by running them through our cccppp wrapper.
+# We build all our tests by running them through our cilpp wrapper.
 CFLAGS += `$(CILPP_PREFIX)/bin/cilpp-cflags` $(BASIC_CFLAGS)
 
 .PHONY: clean
