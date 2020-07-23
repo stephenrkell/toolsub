@@ -121,7 +121,7 @@ do_write_cpp_options () {
     done
 }
 
-declare -a possible_infiles
+declare -a infiles
 normalize_cc1_options () {
     prev_arg=""
     inctr=0
@@ -170,9 +170,9 @@ normalize_cc1_options () {
                     saw_D_FORTIFY_SOURCE=1; pos_D_FORTIFY_SOURCE=$(( $ctr - 1 ))
                 fi
                 ;;& # then keep matching
-            (-) # it denotes stdin, so could be an infile
+            (-) # it denotes stdin, so is an infile
                 # (the case of a stdout outfile was handled above)
-                possible_infiles[$inctr]="$1"
+                infiles[$inctr]="$1"
                 inctr=$(( $inctr + 1 ))
             ;;& # then keep matching
             (-*) # looks like an option, so assume it's NOT an infile
@@ -187,7 +187,7 @@ normalize_cc1_options () {
                     ;; # it's the opt's arg
                     (*)
                         # it may be an input file
-                        possible_infiles[$inctr]="$1"
+                        infiles[$inctr]="$1"
                         inctr=$(( $inctr + 1 ))
                     ;;
                 esac
