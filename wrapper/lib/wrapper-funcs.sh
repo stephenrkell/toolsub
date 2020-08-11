@@ -11,7 +11,7 @@ debug_print () {
     lvl="$1"
     shift
     if [[ "$DEBUG_CC" -ge $lvl ]]; then
-        echo "$@"
+        echo "$@" 1>&2 # don't use 1>&2 -- callers do it (FIXME: why?)
     fi
 }
 
@@ -95,9 +95,6 @@ guess_driver () {
 # line are rather compiler-specific. It would be more robust simply to run
 # that command to get our preprocessing done, and fit our extra processing
 # as pre- and/or post-passes.
-# FIXME: this function could almost be a "normalize_cc1_options" function...
-# not much is specific to producing cpp options as output. What *is* specific
-# to that is the "filter out non-cpp args" step.
 write_cpp_options_from_cc1_options () {
     declare -a norm_cc1_options
     normalize_cc1_options "$@"
