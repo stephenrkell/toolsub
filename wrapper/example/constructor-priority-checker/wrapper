@@ -15,8 +15,6 @@ WRAPPER="$0"
 # Then we check that the assembly output contains the expected
 # incantations in each case. If it doesn't, we flag an warning.
 my_cc1 () {
-    # drop the literal "cc1" argument
-    shift
     # run the compiler
     "$@"
     # Now do our check... our caller has told us what infiles and outfile are
@@ -35,8 +33,8 @@ my_cc1 () {
                         section="$( sed 's/^[[:blank:]]*\.section[[:blank:]]*/\f/g' "$outfile" | \
                             tr '\n' '\v' | tr '\f' '\n' | \
                             sed -rn "/$regex/ p" )"
-                        actual_prio="$( echo "$section" | sed -nr "/$regex/ {s//\2/;p}" )"
-                        if ! [ ${actual_prio:-0} -eq $prio ]; then
+                        actual_prio="$( echo "$section" | sed -nr "/${regex}.*/ {s//\2/;p}" )"
+                        if ! [ ${actual_prio:-0} -eq ${prio:-0} ]; then
                             echo "Error: inconsistent use of constructor attributes on function $func" 1>&2
                             exit 1 
                         fi
