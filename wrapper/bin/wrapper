@@ -41,6 +41,7 @@ debug_print 1 "\$1 is $1" 1>&2
 cc1_command_is_pp () {
     saw_pp=0
     outpos=0
+    doing_m=0
     declare -a seen_args
     while shift; do
         ctr="$(( $ctr + 1 ))"
@@ -48,12 +49,16 @@ cc1_command_is_pp () {
         if [[ -z "$1" ]]; then continue; fi
         case "$1" in
          (-o) outfile="$2"; outpos="$(( $ctr + 1 ))";;
+         (-M|-MM) doing_m=1 ;;
          (-E) saw_pp=1 ;;
         esac
     done
-    # If we didn't see an output file, it might mean that -pipe is being used?
+    # If we didn't see an output file, it might mean that
+    # - the default output filename is being used (DOES the driver do this?)
+    # - the output is going to stdout, and it's a make rule (-M, -MM)
+    # - the output is actual compilation stuff and -pipe is being used?
     # FIXME: support this case once we've seen an example.
-    if [ $outpos -eq 0 ]; then
+    if [ $outpos -eq 0 ] && ! [ $doing_m -eq 1 ]; then
         echo "FIXME: can't work with cc1/cc1plus commands with no output file" 1>&2
         exit 1
     fi
@@ -93,12 +98,10 @@ case "$cmd_to_run" in
 
             # if CC1WRAP is set, use ${CC1WRAP} $1
             CC1WRAP="${CC1WRAP:+${CC1WRAP} ${cmd_to_run}}"
-            # now if CC1WRAP is still not set, just use $1 (but also shift)
-            if [[ -z "$CC1WRAP" ]]; then
-                CC1WRAP="${cmd_to_run}"
-                shift # we don't need the cc1 argument any more
-            fi
-            debug_print 1 "Command:" $CPPWRAP "$@" 1>&2
+            # now if CC1WRAP is still not set, just use $1
+            CC1WRAP="${CC1WRAP:-${orig_cmd}}"
+            shift # we don't need the cc1 argument any more
+            debug_print 1 "Command:" $CC1WRAP "$@" 1>&2
             do_exec ${CC1WRAP} "$@"
         else
             # convert the cc1/cc1plus options to cpp options
@@ -140,6 +143,18 @@ case "$cmd_to_run" in
         # now if ASWRAP is still not set, just use $1
         ASWRAP="${ASWRAP:-${orig_cmd}}"
         do_exec ${ASWRAP} "$@"
+        ;;
+    (collect2|*/collect2)
+        # HACK: turn this back into a link command
+        # FIXME: remember what value collect2 adds to straight linking
+        debug_print 1 "collect2-wrapping: $@" 1>&2
+        orig_cmd="$1"
+        shift
+        # if COLLECT2WRAP is set, use ${COLLECT2WRAP} $1
+        COLLECT2WRAP="${COLLECT2WRAP:+${COLLECT2WRAP} ${orig_cmd}}"
+        # now if COLLECT2WRAP is still not set, just use $1
+        COLLECT2WRAP="${COLLECT2WRAP:-${orig_cmd}}"
+        do_exec ${COLLECT2WRAP} "$@"
         ;;
     (*) debug_print 1 "Non-wrapping: $@" 1>&2
         do_exec "$@"
