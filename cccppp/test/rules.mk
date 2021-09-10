@@ -15,10 +15,8 @@ CXXFLAGS += `$(CCCPPP_PREFIX)/bin/cccppp-cxxflags` $(BASIC_CXXFLAGS)
 	$(CXX) $(CXXFLAGS) -E -o $@ $<
 %.ii: %.cc
 	$(CXX) $(CXXFLAGS) -E -o $@ $<
-%.ast: %.cpp
-	$(CXX) $(CXXFLAGS) -E -o /dev/null $< 2>$@
-%.ast: %.cc
-	$(CXX) $(CXXFLAGS) -E -o /dev/null $< 2>$@
+%.ast: %.vanilla.ii
+	$(CCCPPP_PREFIX)/src/dump $< 2>$@ || (rm -f $@; false)
 %.ii.diff: %.vanilla.ii %.ii
 	diff -u $+ > "$@"; true # diff returns 0 only if identical
 
