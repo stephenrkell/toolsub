@@ -1,5 +1,5 @@
 .PHONY: default src-recursive lib-symlink clean-recursive clean
-default: src-recursive lib-symlink clean-recursive
+default: src-recursive lib-symlink
 
 src-recursive:
 	$(MAKE) -C src
