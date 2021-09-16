@@ -11,3 +11,9 @@ cccppp-recursive: wrapper-recursive
 
 wrapper-recursive:
 	$(MAKE) -C wrapper
+
+.PHONY: clean
+clean:
+	$(MAKE) -C cilpp clean
+	$(MAKE) -C cccppp clean
+	$(MAKE) -C wrapper clean
