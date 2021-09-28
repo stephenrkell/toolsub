@@ -98,14 +98,13 @@ let parseArgsAndRunCppDivertingToTempFile suffix =
           )
         ) (Array.to_list Sys.argv))
     in
-    let cppCommandPrefix = match !seenStd with
-        None -> (
-            match !driver with
-                None -> failwith "can't run the right cpp without -std=xxx option or a -driver"
-              | Some(d) ->
-                    d :: ["-E"] (* This -E may be redundant, but leave it for good measure *)
-            )
-      | Some(_) -> ["cpp"] (* -std= should do the trick *)
+    let cppCommandPrefix =  match !driver with
+        None -> (match !seenStd with
+            None -> failwith "can't run the right cpp without -std=xxx option or a -driver"
+          | Some(_) -> ["cpp"] (* -std= should do the trick *)
+        )
+      | Some(d) ->
+            d :: ["-E"] (* This -E may be redundant, but leave it for good measure *)
     in
     let depsArgs = match !depsOutputFile with
             None -> []
