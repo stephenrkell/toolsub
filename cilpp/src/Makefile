@@ -1,5 +1,7 @@
 THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
-SRCROOT := $(realpath $(dir $(THIS_MAKEFILE))/../../..)
+srcroot := $(realpath $(dir $(THIS_MAKEFILE))/../..)
+
+-include $(srcroot)/config.mk
 
 .PHONY: default
 default: cilpp
@@ -59,3 +61,4 @@ cilpp: compiler_args.cmx cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
 
 clean:
 	rm -f *.o *.cmxa *.cmx *.cmo *.cmxs
+	rm -f cilpp

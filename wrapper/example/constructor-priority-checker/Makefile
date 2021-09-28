@@ -1,5 +1,8 @@
 THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 WRAPPER ?= $(dir $(realpath $(THIS_MAKEFILE)))wrapper
+srcroot := $(dir $(realpath $(THIS_MAKEFILE)))/../../..
+
+-include $(srcroot)/config.mk
 
 OCAMLFIND ?= ocamlfind
 ifeq ($(CIL_INSTALL),)
@@ -25,6 +28,7 @@ default: dumpconstr
 	rm -f $*.o
 
 dumpconstr: OCAMLLIBS += $(CIL_INSTALL)/cil/cil.cmxa -package unix -package str -package num
+dumpconstr: dumpconstr.cmx
 
 .SECONDARY: dumpconstr
 
