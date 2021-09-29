@@ -5,3 +5,7 @@ default: src-recursive
 
 src-recursive:
 	$(MAKE) -C src
+
+.PHONY: clean
+clean:
+	$(MAKE) -C src clean

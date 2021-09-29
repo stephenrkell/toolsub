@@ -7,8 +7,10 @@ srcroot := $(realpath $(dir $(THIS_MAKEFILE))/../..)
 default: cilpp
 
 OCAMLFIND ?= ocamlfind
+ifneq ($(MAKECMDGOALS),clean)
 ifeq ($(CIL_INSTALL),)
 $(error Please set CIL_INSTALL to your CIL directory (containing a file cil/cil.cmxa))
+endif
 endif
 
 OCAMLOPTFLAGS += -fPIC
