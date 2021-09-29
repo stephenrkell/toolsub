@@ -17,6 +17,8 @@ WRAPPER="$0"
 my_cc1 () {
     # run the compiler
     "$@"
+    status=$?
+    if ! [[ $status -eq 0 ]]; then return $status; else
     # Now do our check... our caller has told us what infiles and outfile are
     for f in "${infiles[@]}"; do
         case "$f" in
@@ -47,6 +49,7 @@ my_cc1 () {
             ;;
         esac
     done
+    fi
 }
 CC1WRAP=my_cc1
 
