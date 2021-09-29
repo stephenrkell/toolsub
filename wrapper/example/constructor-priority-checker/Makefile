@@ -2,6 +2,9 @@ THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 WRAPPER ?= $(dir $(realpath $(THIS_MAKEFILE)))wrapper
 srcroot := $(dir $(realpath $(THIS_MAKEFILE)))/../../..
 
+.PHONY: default
+default: dumpconstr
+
 -include $(srcroot)/config.mk
 
 OCAMLFIND ?= ocamlfind
@@ -10,9 +13,6 @@ $(error Please set CIL_INSTALL to your CIL directory (containing a file cil/cil.
 endif
 OCAMLFLAGS +=  -package findlib
 OCAMLFLAGS += -I $(CIL_INSTALL)/cil
-
-.PHONY: default
-default: dumpconstr
 
 %.cmxs: %.cmx 
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+
