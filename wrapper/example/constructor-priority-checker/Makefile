@@ -23,7 +23,7 @@ OCAMLFLAGS += -I $(CIL_INSTALL)/cil
 %.cma: %.cmo
 	$(OCAMLFIND) ocamlc -o "$@" $(OCAMLFLAGS) -a $+
 # we don't want the .o file that gets left behind, as it confuses make
-%: %.cmx %.o
+%: %.cmx
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $< -linkpkg
 	rm -f $*.o
 
