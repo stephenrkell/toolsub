@@ -14,6 +14,7 @@ type extra_arg =
   | Driver
   | DependencyOutputFile of bool (* nameIsExplicitlyRequested *)
 
+(* FIXME: this function should be unwrapped into arg-processing and cpp-invoking parts. *)
 let parseArgsAndRunCppDivertingToTempFile suffix =
     let minusOPos = ref None in
     let saveTemps = ref false in
@@ -116,6 +117,13 @@ let parseArgsAndRunCppDivertingToTempFile suffix =
     in
     let allArgs = cppCommandPrefix @ rewrittenArgs @ outArgs @ depsArgs
     in
+    (*
+    let _ =
+    output_string Pervasives.stderr ("About to execute cpp: " ^
+        (List.fold_left (fun s -> fun arg -> (if s = "" then s else s ^ ", ") ^ arg) "" allArgs)
+        ^ "\n")
+    in
+    *)
     (* FIXME: we have left the fd open *)
     (match fork () with
         | 0 -> (try execvp (List.hd allArgs) (Array.of_list allArgs)

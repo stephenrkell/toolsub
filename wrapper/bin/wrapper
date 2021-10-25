@@ -84,10 +84,13 @@ case "$cmd_to_run" in
         ctr=0
         # if we're only preprocessing, or if we have no explicit output file, just run cc1
         if ! cc1_command_is_pp "$@"; then
+            debug_print 1 "cmd_to_run is $cmd_to_run" 1>&2
             debug_print 1 "cc1-wrapping: $@" 1>&2
             # run the args through normalize_cc1_options anyway
             declare -a norm_cc1_options
             normalize_cc1_options "$@"
+            # WHY? the results are written in norm_cc1_options and we ignore them
+
             # FIXME: instead of 'normalizing' cc1 options but then still
             # passing a cc1 command line out to a cc1 wrapper, we should be
             # consistent with how we wrap 'cpp': rewrite the command line
@@ -96,17 +99,23 @@ case "$cmd_to_run" in
             # never have to worry about the peculiarities of cc1; they should
             # simply wrap the documented cc/cpp/... command lines.
 
-            # if CC1WRAP is set, use ${CC1WRAP} $1
-            CC1WRAP="${CC1WRAP:+${CC1WRAP} ${cmd_to_run}}"
-            # now if CC1WRAP is still not set, just use $1
-            CC1WRAP="${CC1WRAP:-${orig_cmd}}"
-            shift # we don't need the cc1 argument any more
-            debug_print 1 "Command:" $CC1WRAP "$@" 1>&2
-            do_exec ${CC1WRAP} "$@"
+            debug_print 1 "Command before cc1-wrapping:" "$@" 1>&2
+            shift # we don't need the cc1/cc1plus argument any more
+            if [[ -n "$CC1WRAP" ]]; then
+                # if CC1WRAP is set, e.g. to some function my_cc1, we will use
+                # ${CC1WRAP} $cmd_to_run args...
+                cc1cmd="${CC1WRAP} ${cmd_to_run}"
+            else
+                # now if CC1WRAP is still not set, just use what was our $1
+                cc1cmd="${cmd_to_run}"
+            fi
+            debug_print 1 "Command:" $cc1cmd "$@" 1>&2
+            do_exec ${cc1cmd} "$@"
         else
+            debug_print 1 "Command before cpp-wrapping:" "$@" 1>&2
+            shift # we don't need the cc1/cc1plus/cpp argument any more
             # convert the cc1/cc1plus options to cpp options
             declare -a cpp_options
-            # this will shift $cmd_to_run off the front before it does anything
             write_cpp_options_from_cc1_options "$@"
             debug_print 1 "Scraped cpp options: [${cpp_options[@]}]" 1>&2
             # Morally, we want to "just call" cpp. But there's a versioning problem
@@ -127,11 +136,16 @@ case "$cmd_to_run" in
             # We could simplify cilpp by simply guaranteeing to cilpp, or any CPPWRAP
             # program, that we never pass it -MD. However, I want to keep cilpp a generic
             # drop-in(-mostly) replacement, rather than couple it to this wrapper.
-            CPPWRAP="${CPPWRAP:+${CPPWRAP} ${CPP:-$(guess_driver) -E}}"
-            # now if CPPWRAP is still not set, just use cpp
-            CPPWRAP="${CPPWRAP:-${CPP:-$(guess_driver) -E}}"
-            debug_print 1 "Command:" $CPPWRAP "${cpp_options[@]}" 1>&2
-            do_exec ${CPPWRAP} "${cpp_options[@]}"
+            debug_print 1 "CPPWRAP is $CPPWRAP" 1>&2
+            debug_print 1 "CPP is $CPP" 1>&2
+            if [[ -n "$CPPWRAP" ]]; then
+                cppcmd="${CPPWRAP} ${CPP:-$(guess_driver) -E}"
+            else
+                # now if CPPWRAP is still not set, just use cpp
+                cppcmd="${CPP:-$(guess_driver) -E}"
+            fi
+            debug_print 1 "cpp command:" $cppcmd "${cpp_options[@]}" 1>&2
+            do_exec ${cppcmd} "${cpp_options[@]}"
         fi
         ;;
     (as|*/as)

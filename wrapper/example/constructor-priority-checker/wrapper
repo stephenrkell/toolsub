@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # HACK: know where to find toolsub
-TOOLSUB="${TOOLSUB:-/usr/local/src/liballocs/contrib/toolsub}"
+TOOLSUB="${TOOLSUB:-"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/../../..}" #"
 
 # set ourselves as the wrapper
 WRAPPER="$0"

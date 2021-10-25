@@ -103,19 +103,53 @@ write_cpp_options_from_cc1_options () {
 do_write_cpp_options () {
     ctr=0
     while shift || break; do
-        debug_print 1 "\$# is $#, \$1 is '$1'" 1>&2
+        debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
         if [[ $# -eq 0 ]]; then break; fi
         case "$1" in
             # we are running our own cpp-alike -- filter out non-cpp args
             (-imultiarch|-iremap*) shift || break ;; # skip arg too
             (-quiet|-fhonour-copts) ;; # skip just it
             (*)
-                debug_print 1 "Snarfing $1" 1>&2
+                debug_print 2 "Write-cpp: snarfing $1" 1>&2
                 cpp_options[$ctr]="$1"
                 ctr=$(( $ctr + 1 ))
             ;;
         esac
     done
+    # Finally, if we were called with CPP="/path/to/cpp -some_arg -another_arg"
+    # (say by an automake-generated Makefile)
+    # we may want to deduplicate arguments between that cpp and us.
+    # We assume that no argument added to CPP has duplicate-sensitive or
+    # position-sensitive meaning.
+    # PROBLEM: this doesn't work if normalization changed a word syntactically,
+    # which it does with -D et al. Need to act earlier
+    if [[ -n "$CPP" ]]; then
+        declare -a norm_cpp_command
+        word_is_present () {
+            for w in "${cpp_options[@]}"; do
+                debug_print 2 "Comparing $w against $1" 1>&2
+                if [[ "$w" == "$1" ]]; then
+                    return 0
+                else
+                    true
+                fi
+            done
+            return 1
+        }
+        ctr=0
+        for word in $CPP; do
+            if word_is_present "$word"; then
+                debug_print 1 "Dropping $w from CPP" 1>&2
+            else
+                norm_cpp_command[$ctr]="$word"
+                ctr=$(( $ctr + 1))
+            fi
+        done
+        CPP=""
+        for w in "${norm_cpp_command[@]}"; do
+            CPP="${CPP:+$CPP }$w"
+        done
+    fi
 }
 
 declare -a infiles
@@ -133,7 +167,7 @@ normalize_cc1_options () {
     saw_D_FORTIFY_SOURCE=""
     while shift || break; do
         if [[ $# -eq 0 ]]; then break; fi
-        debug_print 1 "\$# is $#, \$1 is '$1'" 1>&2
+        debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
         not_infile=""
         case "$1" in
             (-MD|-MMD)
@@ -190,7 +224,7 @@ normalize_cc1_options () {
                 esac
             ;;&
             (*)
-                debug_print 1 "Snarfing $1" 1>&2
+                debug_print 2 "Normalize: snarfing $1" 1>&2
                 norm_cc1_options[$ctr]="$1"
                 ctr=$(( $ctr + 1))
             ;;
