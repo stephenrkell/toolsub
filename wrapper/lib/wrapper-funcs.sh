@@ -277,19 +277,18 @@ normalize_cc1_options () {
     fi
 }
 
-# FIXME: this is pasted from our constructor-priority-checker
-# where it used to be an assembler wrapper... we switched to
-# wrapping cc1, but this code could prove useful for when
-# assembler-wrapping is actually needed.
+# utility for as-wrappers
 parse_as_command () {
-    echo "My as: $@" 1>&2
+    debug_print 1 "My as: $@" 1>&2
     as="$1"
     shift
-    declare -a args
-    for a in `seq 1 $(( $# - 1 ))`; do
-        args=[$ctr]="${!a}"
+    declare -ga as_args
+    declare -ga as_infiles
+    for a in `seq 1 $#`; do
+        as_args[$ctr]="${!a}"
+        ctr=$(( $ctr + 1 ))
     done
-    declare -a as_options
+    declare -ga as_options
     ctr=0
     while expr match "$1" '^-.*' >/dev/null; do
         as_options[$ctr]="$1"
@@ -300,7 +299,7 @@ parse_as_command () {
             ;;
             # options taking a non-option-looking argument
             ('-o')
-                outfile="$2"
+                as_outfile="$2"
             ;;&
             (--debug-prefix-map|-I|--MD|-o)
                 as_options[$ctr]="$2"
@@ -311,13 +310,19 @@ parse_as_command () {
                 # some other option
             ;;
             (*) # error!
-                echo "Blah!"
+                debug_print 1 "Unrecognised 'as' option: $1" 1>&2
                 false
             ;;
         esac
         shift || break
     done
-    #echo "Doing: ${AS:-as} ${as_options[@]} $@" 1>&2
+    debug_print 1 "as args left over ($#): $@" 1>&2
+    ctr=0
+    for a in `seq 1 $#`; do
+        as_infiles[$ctr]="${!a}"
+        ctr=$(( $ctr + 1 ))
+    done
+    debug_print 1 "Doing: ${AS:-as} ${as_options[@]} -- ${as_infiles[@]}" 1>&2
     #"${as}" "${as_options[@]}" "$@"
 }
 
