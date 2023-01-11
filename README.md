@@ -18,8 +18,8 @@ utilities which make it easier to create your own lightly subverted
 toolchain. Currently it contains the following.
 
 * wrapper, a collection of shell scripts and utility functions for use
-with gcc's '-B' option, capable of intercepting certain stages in the
-compilation (especially preprocessing).
+with gcc's '-wrapper' option, capable of intercepting certain stages in
+the compilation (especially preprocessing).
 
 * cilpp, a more lightweight CIL driver compared to CIL's default
 'cilly', implemented using 'wrapper' to be invokable simply by using

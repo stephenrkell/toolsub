@@ -79,13 +79,13 @@ cc1_command_is_pp () {
 # command. So we transform a preprocessing cc1/cc1plus call's args into
 # args that work for a cpp call.
 cmd_to_run="$1"
+debug_print 1 "`basename "$cmd_to_run"`-wrapping ($cmd_to_run): $@" 1>&2
+debug_print 1 "cmd_to_run is $cmd_to_run" 1>&2
 case "$cmd_to_run" in
     (*/cc1|*/cc1plus)
         ctr=0
         # if we're only preprocessing, or if we have no explicit output file, just run cc1
         if ! cc1_command_is_pp "$@"; then
-            debug_print 1 "cmd_to_run is $cmd_to_run" 1>&2
-            debug_print 1 "cc1-wrapping: $@" 1>&2
             # run the args through normalize_cc1_options anyway
             declare -a norm_cc1_options
             normalize_cc1_options "$@"
@@ -149,19 +149,23 @@ case "$cmd_to_run" in
         fi
         ;;
     (as|*/as)
-        debug_print 1 "as-wrapping: $@" 1>&2
-        orig_cmd="$1"
+        debug_print 1 "command is $@" 1>&2
+        orig_as="$1"
+        parse_as_command "$@"
         shift
         # if ASWRAP is set, use ${ASWRAP} $1
-        ASWRAP="${ASWRAP:+${ASWRAP} ${orig_cmd}}"
-        # now if ASWRAP is still not set, just use $1
-        ASWRAP="${ASWRAP:-${orig_cmd}}"
+        ASWRAP="${ASWRAP:+${ASWRAP} ${orig_as}}"
+        # now if ASWRAP is still not set, just use $1 i.e. run without a wrapper
+        ASWRAP="${ASWRAP:-${orig_as}}"
         do_exec ${ASWRAP} "$@"
         ;;
     (collect2|*/collect2)
-        # HACK: turn this back into a link command
-        # FIXME: remember what value collect2 adds to straight linking
-        debug_print 1 "collect2-wrapping: $@" 1>&2
+        # Somehow we want to actually run collect2 but allow wrapping
+        # the straight link commands that it would run.
+        # See this:
+        # https://gcc.gnu.org/onlinedocs/gccint/Collect2.html
+        # ... collect2 runs the linker once, then maybe runs it again
+        # with an extra (generated) input. Sounds familiar!
         orig_cmd="$1"
         shift
         # if COLLECT2WRAP is set, use ${COLLECT2WRAP} $1
@@ -170,7 +174,7 @@ case "$cmd_to_run" in
         COLLECT2WRAP="${COLLECT2WRAP:-${orig_cmd}}"
         do_exec ${COLLECT2WRAP} "$@"
         ;;
-    (*) debug_print 1 "Non-wrapping: $@" 1>&2
+    (*) debug_print 1 "Actually not wrapping: $@" 1>&2
         do_exec "$@"
         ;;
 esac
