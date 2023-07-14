@@ -2,7 +2,9 @@
 #include <string>
 
 #include "clang/AST/AST.h"
+#include "clang/AST/ASTTypeTraits.h"
 #include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/ASTConsumers.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -19,7 +21,7 @@
 using namespace clang;
 using namespace clang::driver;
 using namespace clang::tooling;
-using clang::ast_type_traits::DynTypedNode;
+using clang::DynTypedNode;
 
 class CCCPPPASTVisitor : public RecursiveASTVisitor<CCCPPPASTVisitor> {
 public:
@@ -230,7 +232,7 @@ public:
     auto parents = TheContext.getParents(*s);
     while (!parents.empty())
     {
-      const ast_type_traits::DynTypedNode *parentNode;
+      const DynTypedNode *parentNode;
       switch (parents.size())
       {
         case 0: assert(false);
@@ -425,7 +427,7 @@ public:
                                                  StringRef file) override {
     llvm::errs() << "== Creating AST consumer for: " << file << "\n";
     TheRewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
-    return llvm::make_unique<CCCPPPConsumer>(TheRewriter, CI.getASTContext());
+    return std::make_unique<CCCPPPConsumer>(TheRewriter, CI.getASTContext());
   }
 
 private:
@@ -457,7 +459,13 @@ int main(int argc, const char **argv) {
    * exec's the tool (i.e. us) with a clang-tool-style command line.  */
   // build a CompilationsDatabase from argv
   //HackedOptionsParser op(argc, argv);
-  CommonOptionsParser OptionsParser(argc, argv, CCCPPPCategory);
+  auto ExpectedParser = CommonOptionsParser::create(argc, argv, CCCPPPCategory);
+  if (!ExpectedParser) {
+    // Fail gracefully for unsupported options.
+    llvm::errs() << ExpectedParser.takeError();
+    return 1;
+  }
+  CommonOptionsParser &OptionsParser = ExpectedParser.get();
   ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
 
   // ClangTool::run accepts a FrontendActionFactory, which is then used to

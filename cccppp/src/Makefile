@@ -31,12 +31,11 @@ dump cccppp-tool: LDLIBS += \
         -lclangTooling \
         -lclangFormat \
         -Wl,--end-group \
-        -lLLVM-8
+        -lLLVM-13
 
-$(CXX_OBJS): CXX := clang-8
-$(CXX_OBJS): CXXFLAGS += -std=c++14 -fPIC -g `llvm-config-8 --cflags` -UNDEBUG
+$(CXX_OBJS): CXXFLAGS += -std=c++14 -fPIC -g `llvm-config-13 --cflags` -UNDEBUG
 
-dump cccppp-tool: LDFLAGS += `llvm-config-8 --ldflags`
+dump cccppp-tool: LDFLAGS += `llvm-config-13 --ldflags`
 
 cccppp-tool: main.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
