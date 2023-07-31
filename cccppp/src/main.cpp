@@ -1,10 +1,15 @@
 #include <sstream>
 #include <string>
+#ifdef USE_STD_UNIQUE_PTR
+#include <memory>
+#endif
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTTypeTraits.h"
 #include "clang/AST/ASTConsumer.h"
+#ifdef HAVE_CLANG_AST_PARENTMAPCONTEXT_H
 #include "clang/AST/ParentMapContext.h"
+#endif
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/ASTConsumers.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -21,7 +26,16 @@
 using namespace clang;
 using namespace clang::driver;
 using namespace clang::tooling;
+#ifdef HAVE_DYNTYPEDNODE_IN_CLANG_NAMESPACE
 using clang::DynTypedNode;
+#else
+using clang::ast_type_traits::DynTypedNode;
+#endif
+#ifdef USE_STD_UNIQUE_PTR
+using std::make_unique;
+#else
+using llvm::make_unique;
+#endif
 
 class CCCPPPASTVisitor : public RecursiveASTVisitor<CCCPPPASTVisitor> {
 public:
@@ -427,7 +441,7 @@ public:
                                                  StringRef file) override {
     llvm::errs() << "== Creating AST consumer for: " << file << "\n";
     TheRewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
-    return std::make_unique<CCCPPPConsumer>(TheRewriter, CI.getASTContext());
+    return make_unique<CCCPPPConsumer>(TheRewriter, CI.getASTContext());
   }
 
 private:
@@ -459,6 +473,7 @@ int main(int argc, const char **argv) {
    * exec's the tool (i.e. us) with a clang-tool-style command line.  */
   // build a CompilationsDatabase from argv
   //HackedOptionsParser op(argc, argv);
+#ifdef HAVE_COMMONOPTIONSPARSER_CREATE
   auto ExpectedParser = CommonOptionsParser::create(argc, argv, CCCPPPCategory);
   if (!ExpectedParser) {
     // Fail gracefully for unsupported options.
@@ -466,6 +481,9 @@ int main(int argc, const char **argv) {
     return 1;
   }
   CommonOptionsParser &OptionsParser = ExpectedParser.get();
+#else
+  CommonOptionsParser OptionsParser(argc, argv, CCCPPPCategory);
+#endif
   ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
 
   // ClangTool::run accepts a FrontendActionFactory, which is then used to
