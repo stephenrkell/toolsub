@@ -5,6 +5,8 @@ default: cccppp cccppp-tool
 
 CXX_OBJS := $(patsubst %.cpp,%.o,$(wildcard *.cpp))
 
+LLVM_CONFIG ?= llvm-config-13
+
 # This is just a big dump of all the clang libraries that could
 # possibly be relevant... the linker will figure otu what to pull in.
 # This changes by version of LLVM. They are all in a group, so
@@ -38,11 +40,11 @@ dump cccppp-tool: LDLIBS += \
         -lclangTooling \
         -lclangFormat \
         -Wl,--end-group \
-        `llvm-config-13 --libs`
+        `$(LLVM_CONFIG) --libs`
 
-$(CXX_OBJS): CXXFLAGS += -std=c++14 -fPIC -g `llvm-config-13 --cxxflags` -UNDEBUG
+$(CXX_OBJS): CXXFLAGS += -std=c++14 -fPIC -g `$(LLVM_CONFIG) --cxxflags` -UNDEBUG
 
-dump cccppp-tool: LDFLAGS += `llvm-config-13 --ldflags`
+dump cccppp-tool: LDFLAGS += `$(LLVM_CONFIG) --ldflags`
 
 cccppp-tool: main.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
