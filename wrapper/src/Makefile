@@ -6,11 +6,10 @@ default: compiler_args.cmx mkstemp_stubs.o
 
 OCAMLFIND ?= ocamlfind
 OCAMLOPTFLAGS += -fPIC
-CFLAGS += -I `ocamlc -where` -fPIC
-
-OCAMLFIND ?= ocamlfind
+CFLAGS += -I `$(OCAMLFIND) ocamlc -where` -fPIC
 OCAMLFLAGS +=  -package findlib
 
+export OCAMLOPTFLAGS
 export OCAMLFLAGS
 export OCAMLFIND
 
