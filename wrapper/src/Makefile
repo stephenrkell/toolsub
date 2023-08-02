@@ -6,7 +6,7 @@ default: compiler_args.cmx mkstemp_stubs.o
 
 OCAMLFIND ?= ocamlfind
 OCAMLOPTFLAGS += -fPIC
-CFLAGS += -fPIC
+CFLAGS += -I `ocamlc -where` -fPIC
 
 OCAMLFIND ?= ocamlfind
 OCAMLFLAGS +=  -package findlib

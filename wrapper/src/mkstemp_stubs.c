@@ -2,11 +2,13 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
 #include <caml/mlvalues.h>
 #include <caml/alloc.h>
 #include <caml/misc.h>
 #include <caml/memory.h>
 #include <caml/callback.h>
+#include <caml/fail.h>
 
 // HACK: internal OCaml Unix module detail
 value unix_error_of_code(int code);
