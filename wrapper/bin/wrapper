@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # FIXME: rewrite this in C, or at least as a POSIX shell script.
 
 # Using gcc's -wrapper option, the compiler driver will invoke
