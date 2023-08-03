@@ -54,6 +54,7 @@ dump: dump.o
 OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
+mkstemp_stubs.o: CFLAGS += -I$(shell $(OCAMLFIND) ocamlc -where)
 OCAMLFIND ?= ocamlfind
 OCAMLFLAGS +=  -package findlib -package dynlink
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib
