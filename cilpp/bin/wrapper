@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # set ourselves as the wrapper
 WRAPPER="$0"

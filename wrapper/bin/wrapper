@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # FIXME: rewrite this in C, or at least as a POSIX shell script.
 
 # Using gcc's -wrapper option, the compiler driver will invoke
@@ -36,7 +36,7 @@ if [[ -z "$WRAPPER" ]]; then
     . "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
 fi
 
-debug_print 1 "\$1 is $1" 1>&2
+debug_print 1 "\$@ is $@" 1>&2
 
 cc1_command_is_pp () {
     saw_pp=0

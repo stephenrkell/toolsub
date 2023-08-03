@@ -78,7 +78,7 @@ run_with_replacement_infile () {
 }
 
 guess_driver () {
-    driver="$( readlink /proc/$PPID/exe )"
+    driver="$( ps -p $PPID -o comm= )"
     debug_print 1 "driver binary is probably $driver" 1>&2
     echo "$driver"
 }

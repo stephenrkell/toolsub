@@ -185,7 +185,7 @@ let runCommand cmdFriendlyName argvList =
     (*
     let _ =
     output_string Pervasives.stderr ("About to execute cpp: " ^
-        (List.fold_left (fun s -> fun arg -> (if s = "" then s else s ^ ", ") ^ arg) "" argvList)
+        (List.fold_left (fun s -> fun arg -> (if s = "" then s else s ^ " ") ^ arg) "" argvList)
         ^ "\n")
     in
     *)
