@@ -240,3 +240,13 @@ The helper is a bit ugly but it does the job for now.
     Optional<SourceRange> rightIntersticeRange = rightOpenRange(eSubRight->getSourceRange().getEnd(),
        eOuter->getSourceRange().getEnd(), true, true);
 
+I've added these to the 'interstitial' tool. There is still an analogous
+problem to do with the ambiguity. So far it still seems to generate correct
+output, but it needs a lot more testing. I have picked 'gddrescue' as a simple
+C++ codebase to try it on. Build toolsub/src/interstitial and toolsub/src/interstitial-tool.
+Then update toolsub/cccppp/bin/cccppp to point to 'interstitial'. Then you can
+build gddrescue with
+
+make CXX="g++ -save-temps `/path/to/cccppp/bin/cccppp-cxxflags`"
+
+and it will try to build using the rewriting.
