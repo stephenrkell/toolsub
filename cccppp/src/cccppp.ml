@@ -44,9 +44,13 @@ let () =
             )
     in
     let () = dup2 infd stdin in
+    (* We are run as 'cccppp' and we want to find and run 'cccppp-tool'.
+     * Here 'is_relative' is also handling the case where we were run via $PATH
+     * and so the argv[0] is just a command name. I THINK. *)
+    let ourCommandName = Filename.basename (Sys.executable_name) in
     let toolPath = if Filename.is_relative Sys.argv.(0) (* TODO: perhaps try Sys.executable_name ? *)
-        then Filename.concat Filename.current_dir_name "cccppp-tool"
-        else Filename.concat (Filename.dirname Sys.executable_name) "cccppp-tool"
+        then Filename.concat Filename.current_dir_name (ourCommandName ^ "-tool")
+        else Filename.concat (Filename.dirname Sys.executable_name) (ourCommandName ^ "-tool")
     in
     let preludePath = List.fold_left Filename.concat (Filename.dirname toolPath)
         [".."; "include"; "prelude.hpp"]

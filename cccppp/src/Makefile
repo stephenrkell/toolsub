@@ -11,7 +11,7 @@ LLVM_CONFIG ?= llvm-config-13
 # possibly be relevant... the linker will figure otu what to pull in.
 # This changes by version of LLVM. They are all in a group, so
 # the order doesn't matter (it's alphabetical).
-dump cccppp-tool: LDLIBS += \
+dump cccppp-tool interstitial-tool simple-tool: LDLIBS += \
         -Wl,--start-group \
         -lclangAST \
         -lclangASTMatchers \
@@ -44,9 +44,11 @@ dump cccppp-tool: LDLIBS += \
 
 $(CXX_OBJS): CXXFLAGS += -std=c++14 -fPIC -g `$(LLVM_CONFIG) --cxxflags` -UNDEBUG
 
-dump cccppp-tool: LDFLAGS += `$(LLVM_CONFIG) --ldflags`
+dump cccppp-tool interstitial-tool simple-tool: LDFLAGS += `$(LLVM_CONFIG) --ldflags`
 
 cccppp-tool: main.o
+	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
+interstitial-tool: interstitial.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 dump: dump.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
@@ -64,7 +66,7 @@ vpath %.o $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 
 OCAMLLIBS := str.cmxa nums.cmxa unix.cmxa
 
-cccppp: compiler_args.cmx cccppp.ml mkstemp_stubs.o
+interstitial simple cccppp: compiler_args.cmx cccppp.ml mkstemp_stubs.o
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $+ -linkpkg -linkall
 
 %.cmxs: %.cmx

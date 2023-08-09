@@ -1,0 +1,344 @@
+Let's consider rewriting a binary expression.
+We take the example of an array subscript expression.
+
+If we have
+
+            expr1  [ expr2 ]
+           ^^    ^   ^    ^ ^
+           |`----'    `---' |
+           \________________/
+            sourcerange
+
+There are three relevant AST nodes:
+the overall ArraySubscriptExpr,
+the subexpresion expr1
+and the subexpression expr2.
+Each of these has a `source range'
+which is essentially a pair of SourceLocation values.
+A SourceLocation is (according to Clang documentation)
+"simply an offset into the manager's view of the input source,
+which is all input buffers (including macro expansions)
+concatenated in an effectively arbitrary order.
+The manager actually maintains two blocks of input buffers.
+One, starting at offset 0 and growing upwards, contains all buffers from this module.
+The other, starting at the highest possible offset and growing downwards, 
+contains buffers of loaded modules."
+
+Our source code rewriter works by
+post-order traversal of the AST, i.e. rewriting innermore expressions before outermore ones.
+This is the natural order for doing these rewrites.
+It has the nice property that once a range of characters is rewritten,
+we never have to rewrite *within*
+that range -- any subexpression inside the range was rewritten earlier.
+
+You might think we could simply rewrite source code by doing something like this.
+
+  void ReplaceBinaryExpression(Expr *eOuter, Expr *eSubLeft, Expr *eSubRight,
+    const std::string& overallReplacement
+  )
+  {
+    llvm::errs() << "Initially left-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubLeft->getSourceRange()) << "'\n";
+    llvm::errs() << "Initially right-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubRight->getSourceRange()) << "'\n";
+    llvm::errs() << "Initially whole binary expression is: `"
+      << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
+     TheRewriter.ReplaceText(
+      eOuter->getSourceRange().getBegin(),
+      TheRewriter.getRewrittenText(eOuter->getSourceRange()).length(),
+      overallReplacement
+     );
+    llvm::errs() << "Now left-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubLeft->getSourceRange()) << "'\n";
+    llvm::errs() << "Now right-hand subexpression is:  `"
+      << TheRewriter.getRewrittenText(eSubRight->getSourceRange()) << "'\n";
+    llvm::errs() << "Now whole binary expression is: `"
+      << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
+  }
+
+In other words we ask the rewriter to replace the whole expression
+with a new chunk of text that we have built,
+using the former text.
+
+Unfortunately, this corrupts libClang's view of what
+each subexpression's text is, and we end up with broken output.
+Here is some debug print-out.
+
+Post-order-reached a new ArraySubscriptExpr: p[0]
+ArraySubscriptExpr 0x56248caf8c48 'int' lvalue
+|-ImplicitCastExpr 0x56248caf8c30 'int *' <LValueToRValue>
+| `-DeclRefExpr 0x56248caf8bf0 'int *' lvalue ParmVar 0x56248caf8a30 'p' 'int *'
+`-IntegerLiteral 0x56248caf8c10 'int' 0
+Initially left-hand subexpression is:  `p'
+Initially right-hand subexpression is:  `0'
+Initially whole binary expression is: `p[0]'
+Now left-hand subexpression is:  `_'
+Now right-hand subexpression is:  `0'
+Now whole binary expression is: `__primop_subscript<int * >()(p, 0)'
+
+What just happened? The text buffer formerly said
+
+outer expression
+ |   |
+ v   v
+ p[0]
+ ^^^^
+ |\\\
+ | \\'---.
+ |  \\    \
+ |   \\    \
+ eleft eRight
+  'p'    '0'
+
+And we rewrote the outer expression wholesale, and got the following.
+
+           outer expression
+ |                                 |
+ v                                 v
+ __primop_subscript<int * >()(p, 0)
+ ^^                              ^^
+ |\                               \\
+ | \                               \'---.
+ |  \                               \    \
+ |   \                               \    \
+ eLeft                                eRight
+  '_'                                  '0'
+
+The view of eLeft is wrong, but the view of eRight is correct.
+What happened?
+
+My best guess is that this is a boundary condition issue.
+Each subexpression's source begin/end locations are
+essentially pointers into a big conbimed buffer.
+When rewriting,
+for all subexpressions that started *strictly after* the rewritten range start,
+libClang knows to shift their pointers into the buffer
+by the net gain (shifting right) or loss (shifting left)
+in characters after the rewrite.
+But consider when both an enclosing expression and its subexpression both starts at exactly
+the same place,
+as with our "p[0]" example where the "p" subexpression has the same start point
+as the whole "p[0]" expression.
+Clang does not know whether the rewrite applies
+to that subexpression or not,
+so does not know whether the subexpression's start position needs to shift.
+Indeed since character rewrites don't occur at a particular
+level in the AST, the correct interpretation is ambiguous: we could rewrite
+
+p[0]
+
+to
+
+(p)[0]
+
+in which case the left-hand subexpression should move right,
+but also we could rewrite it to
+
+p [0]
+
+in which case it should not.
+
+In any case, what it does is wrong because
+in general the 'net gain or loss' in characters
+is simply not the right number to shift by.
+Only we, who created the rewritten expression,
+know how or even whether it includes the original subexpressions.
+In the above example it got the '0' right-hand subexpression correct.
+But this was only a coincidence!
+For example, we could do the following very similar rewriting
+where we insert a load of whitespace.
+
+           outer expression
+ |                                                    |
+ v                                                    v
+ __primop_subscript<int * >()(p, 0                   )
+ ^^                                                 ^^
+ |\                                                  \\
+ | \                                                  \'---.
+ |  \                                                  \    \
+ |   \                                                  \    \
+ eLeft                                                   eRight
+  '_'                                                     ' '
+
+Now both left and right are wrong.
+
+Does this matter? Can we still get well-formed source code out of libClang
+despite its being confused about where the subexpressions are?
+The answer is 'yes, but not always'.
+I haven't fully understood when this does and doesn't happen.
+
+We can avoid this problem by not doing a wholesale rewriting
+of a binary expression, but
+instead doing a collection of smaller rewrites,
+rewriting its *interstices* i.e. the regions between the subexpressions.
+The idea is that our rewrites leave the embedded subexpressions alone.
+In effect this replaces the "net gain shift"
+with a number of smaller shifts
+which allow libClang to do the right updates
+to the subexpressions' pointers.
+
+            left interstice     middle  right interstice
+            |--------------|    |--|    |--|
+            v              v    v  v    v  v
+            __primop_blah( expr1 , expr2  )
+            ^              ^    ^  ^    ^  ^
+            |              `----'  `----'  |
+            `------------------------------'
+            eOuter          eLeft   eRight
+
+Let's try to code this up directly.
+
+    SourceRange leftIntersticeRange(eOuter->getSourceRange().getBegin(),
+       eSubLeft->getSourceRange().getBegin());
+    SourceRange midIntersticeRange(eSubLeft->getSourceRange().getEnd(),
+       eSubRight->getSourceRange().getBegin());
+    SourceRange rightIntersticeRange(eSubRight->getSourceRange().getEnd(),
+       eOuter->getSourceRange().getEnd());
+
+    llvm::errs() << "Initially left interstice is:  `"
+      << TheRewriter.getRewrittenText(leftIntersticeRange) << "'\n";
+    llvm::errs() << "Initially mid interstice is:  `"
+      << TheRewriter.getRewrittenText(midIntersticeRange) << "'\n";
+    llvm::errs() << "Initially right interstice is: `"
+      << TheRewriter.getRewrittenText(rightIntersticeRange) << "'\n";
+
+The above do not work. For 'p[0]' I get
+
+Initially left interstice is:  `p'
+Initially mid interstice is:  `p[0'
+Initially right interstice is: `0]'
+
+But it seems that the problem is just that 'end' is off by one.
+In most sensible codebases, ranges are encoded "right-open" so that [1, 3)
+means {1, 2} i.e. 3 is excluded.
+This means that the end of one range is equal to the beginning of an immediately following range.
+In Clang this is not the case.
+The 'end' position is the position of the last character,
+not the position one past the last character.
+This means it is hard to represent an empty range.
+Since we often get empty interstices -- e.g. in "p[0]" the left-hand interstice is empty --
+we need a way to represent empty character ranges.
+
+I've coded this up using Optional<SourceRange>.
+An empty Optional value means an empty range.
+The helper is a bit ugly but it does the job for now.
+
+    auto rightOpenRange = [=](SourceLocation begin, SourceLocation end,
+        bool beginIsAnEnd, bool endIsAnEnd) -> Optional<SourceRange> {
+        //auto pair = sm.getDecomposedLoc(end);
+        //return end.getLocWithOffset(1);
+        SourceLocation beginLoc = beginIsAnEnd ? begin.getLocWithOffset(1) : begin;
+        SourceLocation onePastEndLoc = endIsAnEnd ? end.getLocWithOffset(1) : end;
+        if (beginLoc == onePastEndLoc) return Optional<SourceRange>();
+        return SourceRange(beginLoc, onePastEndLoc.getLocWithOffset(-1));
+    };
+
+    Optional<SourceRange> leftIntersticeRange = rightOpenRange(eOuter->getSourceRange().getBegin(),
+       eSubLeft->getSourceRange().getBegin(), false, false);
+    Optional<SourceRange> midIntersticeRange = rightOpenRange(eSubLeft->getSourceRange().getEnd(),
+       eSubRight->getSourceRange().getBegin(), true, false);
+    Optional<SourceRange> rightIntersticeRange = rightOpenRange(eSubRight->getSourceRange().getEnd(),
+       eOuter->getSourceRange().getEnd(), true, true);
+
+
+We still have three ranges, but clearly,
+in the coordinate space of the entire rewritten file,
+expr1's start offset has changed relative to the original file,
+expr2's has also changed,
+any anything after them in the file have also changed.
+This is because we have inserted more text than was there before.
+
+The main API calls to do a replacement in libClang are
+
+Rewriter::InsertTextBefore(SourceLocation, StringRef)
+Rewriter::InsertTextAfter(SourceLocation, StringRef)
+Rewriter::RemoveText(SourceLocation, unsigned)
+Rewriter::ReplaceText(SourceLocation, unsigned, StringRef)
+
+We can also query for existing text using
+
+Rewriter::getRewrittenText(SourceRange)
+
+All of these make use of SourceRange which is essentially a pair of
+SourceLocation values.
+A SourceLocation is
+"simply an offset into the manager's view of the input source,
+which is all input buffers (including macro expansions)
+concatenated in an effectively arbitrary order.
+The manager actually maintains two blocks of input buffers.
+One, starting at offset 0 and growing upwards, contains all buffers from this module.
+The other, starting at the highest possible offset and growing downwards, 
+contains buffers of loaded modules."
+
+So, the APIs involving SourceLocations are quite abstract
+and seem to hide from us the raw file offset space.
+This is potentially good!
+However, one quirk is that we don't have a call to replace
+one source range with another source range.
+To do a replacement or removal, we need to give a single location and a length.
+What is the right length to use?
+One answer might be 
+
+    Rewriter::getRewrittenText(SourceRange).length()
+
+... i.e. if we want to replace an outer expression 'e',
+where that expression contains subexpressions
+that may themselves previously have been rewritten,
+can we just do a replacement of the wh
+
+If we ask libClang for the 
+
+       clearly sourcerange(file/offset..file/offset)) now maps to the rewritten buffer
+              
+       BUT do the expr1's and expr2's source ranges also point there?
+       How does Clang know to map *their* locations into the rewrite buffer?
+       It doesn't!
+       Clang also doesn't know that the expression's AST has changed.
+       Indeed it hasn't! Clang still sees an ArraySubscriptExpr, say.
+       We have just updated the pointers in the text buffers.
+
+       It took some trial and error to get something that works. Here is the idea.
+       In short, we never replace the contents of e1 and e2.
+       Instead we rewrite the "glue syntax" of the overarching expression
+
+             AAAAA        BBBBB        CCCCCC
+                     p      [     off     ]
+             XXXXX __e1__ YYYYY __e2__ ZZZZZZ
+             `------------eOuter------------'
+       That means instead of one big replace,
+       - replace the AAAAA with XXXXX, i.e. from the start of eOuter up to the start of e1
+       - replace the BBBBB with YYYYY
+       - replace the CCCCC with ZZZZZ
+
+       How might we acahieve this?
+       
+     inserting before the beginning of the left range does not do not what we want;
+       the inserted text is included in the left expression's range after the rewrite,
+     i.e. it's more like "at the beginning" than "before the beginning".
+     try inserting "after" eOuter's getSourceRange().getBegin()?
+     No, that does the same thing
+     Try inserting "not after", i.e. passing "false" to the 3-args InsertText?
+     No, that does the same thing too. What about?
+    TheRewriter.ReplaceText(eOuter->getSourceRange().getBegin(),
+      lengthA,
+      replacementA);
+     No, that turned "__a" into "__m" i.e. remapped the left subexpr's start to the replacement
+     (because here the left subexpression begins at the same place as the outer expression).
+     What about doing the insertion *then* doing the removal?
+     Using InsertTextBefore, this seems to do the right thing.
+
+
+    if (lengthA > 0) TheRewriter.RemoveText(eOuter->getSourceRange().getBegin(),
+      lengthA);
+    TheRewriter.InsertTextBefore(eSubLeft->getSourceRange().getBegin(),
+      replacementA);
+    TheRewriter.ReplaceText(
+      eSubLeft->getSourceRange().getBegin()
+        .getLocWithOffset(offsetHackedEndSubLeft - offsetBeginSubLeft),
+      lengthB,
+      replacementB);
+    TheRewriter.ReplaceText(
+      eSubRight->getSourceRange().getBegin()
+        .getLocWithOffset(offsetHackedEndSubRight - offsetBeginSubRight),
+      lengthC,
+      replacementC);
