@@ -171,6 +171,11 @@ public:
      * the original distance between LH-end and RH-begin. FIXME: can this still happen? */
     unsigned lengthC = offsetHackedEndOuter - offsetHackedEndSubRight;
     static const unsigned MAXIMUM_SANE_LENGTH = 10000;
+    llvm::errs() << "Replacee fragments: {`"
+      << TheRewriter.getRewrittenText(eOuter->getSourceRange()).substr(0, lengthA)
+      << "', `" << TheRewriter.getRewrittenText(eOuter->getSourceRange()).substr(offsetBeginSubLeft - offsetBeginOuter, lengthB)
+      << "', `" << TheRewriter.getRewrittenText(eOuter->getSourceRange()).substr(offsetBeginSubRight - offsetBeginOuter, lengthC)
+      << "'}\n";
     llvm::errs() << "Replacee fragments have lengths " << lengthA << ", " << lengthB << ", "
       << lengthC << "\n";
     assert(lengthA < MAXIMUM_SANE_LENGTH);
@@ -183,9 +188,18 @@ public:
     llvm::errs() << "Expressions (outer, l, r) have hacked file end offsets " 
         << offsetHackedEndOuter
         << ", " << offsetHackedEndSubLeft << ", " << offsetHackedEndSubRight << "\n";
-    // FIXME: does this do anything? It seems dead.
-    Rewriter::RewriteOptions notBegin;
-    notBegin.IncludeInsertsAtBeginOfRange = false;
+
+
+    llvm::errs() << "Expressions (outer, l, r) have hacked file end offsets " 
+        << offsetHackedEndOuter
+        << ", " << offsetHackedEndSubLeft << ", " << offsetHackedEndSubRight << "\n";
+    llvm::errs() << "Outer expression, length " << TheRewriter.getRewrittenText(eOuter->getSourceRange()).length() << ", has (begin, end, hacked-end): ("
+        << offsetBeginOuter << ", " << offsetEndOuter << ", " << offsetHackedEndOuter << ")" << "\n";
+    llvm::errs() << "Left subexpression, length " << TheRewriter.getRewrittenText(eSubLeft->getSourceRange()).length() << ", has (begin, end, hacked-end): ("
+        << offsetBeginSubLeft << ", " << offsetEndSubLeft << ", " << offsetHackedEndSubLeft << ")" << "\n";
+    llvm::errs() << "Right subexpression, length " << TheRewriter.getRewrittenText(eSubRight->getSourceRange()).length() << ", has (begin, end, hacked-end): ("
+        << offsetBeginSubRight << ", " << offsetEndSubRight << ", " << offsetHackedEndSubRight << ")" << "\n";
+
     /* Recall our picture:
              AAAAA        BBBBB        CCCCCC
                      p      [     off     ]
