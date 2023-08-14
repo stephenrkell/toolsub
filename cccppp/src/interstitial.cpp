@@ -88,11 +88,43 @@ public:
     const std::string& rightInterstice
   )
   {
-    llvm::errs() << "Initially left-hand subexpression is:  `"
+    /* Helper to get the length in characters of a SourceRange, assuming it is
+     * all within the same file.
+     * FIXME: the #if 0'd code here does not give the right answers! E.g.
+     *
+		Initially left-hand subexpression (length 1) is:  `__a'
+		Initially right-hand subexpression (length 1) is:  `__n'
+		Initially whole binary expression (length 8) is: `__a[__n]'
+
+     * ... the whole-expression length is correct but the others are not.
+     * We are assuming that the gap in chars between two SourceRanges
+     * always equals the string length of TheRewriter.getRewrittenText(e->getSourceRange()),
+     * but that clearly isn't true. (FIXME: understand why!)
+     * Instead let's always use getRewrittenText to calculate lengths, and somehow
+     * use that when making ranges for the interstices.
+     */
+    auto rangeLength = [this](Optional<SourceRange> r) -> unsigned {
+      if (!r) return 0;
+#if 0
+      std::pair<FileID, unsigned> locBegin = TheRewriter.getSourceMgr().getDecomposedLoc(
+          r->getBegin());
+      std::pair<FileID, unsigned> locEnd = TheRewriter.getSourceMgr().getDecomposedLoc(
+          r->getEnd());
+      assert(locBegin.first == locEnd.first);
+      /* Remember that "end" really means "last char", so we need to subtract from
+       * the one-past-the-end position to get the length. */
+      return locEnd.second + 1 - locBegin.second;
+#endif
+      return TheRewriter.getRewrittenText(*r).length();
+    };
+    unsigned leftSubLength = rangeLength(eSubLeft->getSourceRange());
+    unsigned rightSubLength = rangeLength(eSubRight->getSourceRange());
+    unsigned outerLength = rangeLength(eOuter->getSourceRange());
+    llvm::errs() << "Initially left-hand subexpression (length " << leftSubLength << ") is:  `"
       << TheRewriter.getRewrittenText(eSubLeft->getSourceRange()) << "'\n";
-    llvm::errs() << "Initially right-hand subexpression is:  `"
+    llvm::errs() << "Initially right-hand subexpression (length " << rightSubLength << ") is:  `"
       << TheRewriter.getRewrittenText(eSubRight->getSourceRange()) << "'\n";
-    llvm::errs() << "Initially whole binary expression is: `"
+    llvm::errs() << "Initially whole binary expression (length " << outerLength << ") is: `"
       << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
 
 #if 0
@@ -124,28 +156,78 @@ Initially right interstice is: `0]'                should be ']'
        // Add a delta so that future changes are offset correctly.
        AddInsertDelta(OrigOffset, Str.size());
      */
-    auto rightOpenRange = [=](SourceLocation begin, SourceLocation end,
+    auto mkRightOpenRange = [=](SourceLocation begin, SourceLocation end,
         bool beginIsAnEnd, bool endIsAnEnd) -> Optional<SourceRange> {
         //auto pair = sm.getDecomposedLoc(end);
         //return end.getLocWithOffset(1);
         SourceLocation beginLoc = beginIsAnEnd ? begin.getLocWithOffset(1) : begin;
         SourceLocation onePastEndLoc = endIsAnEnd ? end.getLocWithOffset(1) : end;
+        // convert back to SourceRange's right-closed representation
         if (beginLoc == onePastEndLoc) return Optional<SourceRange>();
         return SourceRange(beginLoc, onePastEndLoc.getLocWithOffset(-1));
     };
-
-    Optional<SourceRange> leftIntersticeRange = rightOpenRange(eOuter->getSourceRange().getBegin(),
+    auto mkStartLengthRange = [=](SourceLocation start, unsigned length) -> Optional<SourceRange> {
+        if (length == 0) return Optional<SourceRange>();
+        return SourceRange(start, start.getLocWithOffset(length));
+    };
+#if 0
+    Optional<SourceRange> leftIntersticeRange = mkRightOpenRange(eOuter->getSourceRange().getBegin(),
        eSubLeft->getSourceRange().getBegin(), false, false);
-    Optional<SourceRange> midIntersticeRange = rightOpenRange(eSubLeft->getSourceRange().getEnd(),
+    // mid interstice comes out wrong! e.g. for "xyp[0+0]" it thinks it is "yp[" not "["
+    // ... why is it coming out wrong by 2? It is actually always 1 char long, so wrong arbitrarily
+    Optional<SourceRange> midIntersticeRange = mkRightOpenRange(eSubLeft->getSourceRange().getEnd(),
        eSubRight->getSourceRange().getBegin(), true, false);
-    Optional<SourceRange> rightIntersticeRange = rightOpenRange(eSubRight->getSourceRange().getEnd(),
+    Optional<SourceRange> rightIntersticeRange = mkRightOpenRange(eSubRight->getSourceRange().getEnd(),
        eOuter->getSourceRange().getEnd(), true, true);
+#endif
+    // instead, let's use just lengths computed by rangeLength, i.e. getRewrittenText,
+    // to build the ranges for the interstices.
+/*        left   mid      right
+           ||    |   |    ||
+           vv    v   v    vv
+            expr1  [ expr2 ]
+           ^^    ^   ^    ^ ^
+           |`----'    `---' |
+           \________________/
+*/
+    // There are many ways we could build the interstices.
+    // Let's try building all of them by narrowing eOuter, i.e. by offsetting its beginning
+    // forwards and its end backwards.
+    // the start of eSubLeft and the start of eSubRight
+    // It's easiest to do this right-to-left, and calculating lengths first.
+    unsigned leftIntersticeLength = rangeLength(mkRightOpenRange(eOuter->getSourceRange().getBegin(),
+       eSubLeft->getSourceRange().getBegin(), false, false));
+    unsigned midIntersticeLength = rangeLength(mkRightOpenRange(eSubLeft->getSourceRange().getEnd(),
+       eSubRight->getSourceRange().getBegin(), true, false));
+    unsigned rightIntersticeLength = rangeLength(mkRightOpenRange(eSubRight->getSourceRange().getEnd(),
+       eOuter->getSourceRange().getEnd(), true, true));
+    /* Now we've got the lengths, get the start positions. */
+    SourceLocation leftIntersticeStart = eOuter->getSourceRange().getBegin();
+    SourceLocation midIntersticeStart = eSubLeft->getSourceRange().getEnd().getLocWithOffset(1);
+    SourceLocation rightIntersticeStart = eSubRight->getSourceRange().getEnd().getLocWithOffset(1);
+    SourceLocation leftIntersticeEnd = eSubLeft->getSourceRange().getBegin().getLocWithOffset(-1);
+    SourceLocation midIntersticeEnd = eSubRight->getSourceRange().getBegin().getLocWithOffset(-1);
+    SourceLocation rightIntersticeEnd = eOuter->getSourceRange().getEnd();
+    // now does this work?
+    Optional<SourceRange> leftIntersticeRange = mkStartLengthRange(
+       leftIntersticeStart, leftIntersticeLength);
+    Optional<SourceRange> midIntersticeRange = mkStartLengthRange(
+       midIntersticeStart, midIntersticeLength);
+    Optional<SourceRange> rightIntersticeRange = mkStartLengthRange(
+       rightIntersticeStart, rightIntersticeLength);
 
-    llvm::errs() << "Initially left interstice is:  `"
+    /* The sum of lengths of the interstices should be equal to the length of the whole expression
+     * minus the lengths of the subexpression. */
+    unsigned intersticesLength = rangeLength(leftIntersticeRange)
+      + rangeLength(midIntersticeRange)
+      + rangeLength(rightIntersticeRange);
+    //assert(intersticesLength + leftSubLength + rightSubLength == outerLength);
+
+    llvm::errs() << "Initially left interstice (length " << rangeLength(leftIntersticeRange) << ") is:  `"
       << (!leftIntersticeRange ? "" : TheRewriter.getRewrittenText(*leftIntersticeRange)) << "'\n";
-    llvm::errs() << "Initially mid interstice is:  `"
+    llvm::errs() << "Initially mid interstice (length " << rangeLength(midIntersticeRange) << ") is:  `"
       << (!midIntersticeRange ? "" : TheRewriter.getRewrittenText(*midIntersticeRange)) << "'\n";
-    llvm::errs() << "Initially right interstice is: `"
+    llvm::errs() << "Initially right interstice (length " << rangeLength(rightIntersticeRange) << ") is: `"
       << (!rightIntersticeRange ? "" : TheRewriter.getRewrittenText(*rightIntersticeRange)) << "'\n";
 
     /* Do three small rewrites, not one big one. */
