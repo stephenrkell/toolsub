@@ -15,6 +15,14 @@ open Unix
 let () =
     let argList = Array.to_list Sys.argv in
     let (argChunks, basicInfo) = scanAndChunkCppArgs argList in
+    let ourCommandName = Filename.basename (Sys.executable_name) in
+    let toolPath = if Filename.is_relative Sys.argv.(0) (* TODO: perhaps try Sys.executable_name ? *)
+        then Filename.concat Filename.current_dir_name (ourCommandName ^ "-tool")
+        else Filename.concat (Filename.dirname Sys.executable_name) (ourCommandName ^ "-tool")
+    in
+    let getHeaderPath basename = List.fold_left Filename.concat (Filename.dirname toolPath)
+        [".."; "include"; (basename ^ ".hpp")]
+    in
     let (newTempFd, newTempName) = mkstemps ("/tmp/tmp.XXXXXX.cpp.ii") (String.length ".cpp.ii") in
     let rewrittenArgs = List.flatten (List.mapi (fun i -> fun argChunk ->
         if i = 0 then [] (* we fill "cpp" or whatever from cppCommandPrefix *) else
@@ -47,18 +55,19 @@ let () =
     (* We are run as 'cccppp' and we want to find and run 'cccppp-tool'.
      * Here 'is_relative' is also handling the case where we were run via $PATH
      * and so the argv[0] is just a command name. I THINK. *)
-    let ourCommandName = Filename.basename (Sys.executable_name) in
-    let toolPath = if Filename.is_relative Sys.argv.(0) (* TODO: perhaps try Sys.executable_name ? *)
-        then Filename.concat Filename.current_dir_name (ourCommandName ^ "-tool")
-        else Filename.concat (Filename.dirname Sys.executable_name) (ourCommandName ^ "-tool")
-    in
-    let preludePath = List.fold_left Filename.concat (Filename.dirname toolPath)
-        [".."; "include"; "prelude.hpp"]
-    in
+    let preludePath = getHeaderPath "prelude" in
     (* print the line marker for the prelude *)
     (output_string Pervasives.stdout ("# 1 \"" ^ preludePath ^ "\"\n"); flush Pervasives.stdout;
     (* FIXME: manage quoting properly -- probably by avoiding Unix.system *)
+    (* Q. Why is this prelude-writing a 'cat' to stdout? A. It's because above we dup2'd our
+     * temporary file to standard output. cccppp-tool always writes its output to stdout. *)
     Unix.system ("cat '" ^ preludePath ^ "'");
+    (* The tool will provide the rest of the output to stdout. But we have to hack its input
+     * first: we declare any built-ins that we can't rely on libClang to know about. *)
+    let builtinsPath = getHeaderPath "builtins" in
+    let (hackedTempFd, hackedTempName) = mkstemps ("/tmp/tmp.XXXXXX.cpp+builtins.ii")
+        (String.length ".cpp+builtins.ii") in
+    Unix.system ("cat '" ^ builtinsPath ^ "' '" ^ newTempName ^ "' > '" ^ hackedTempName ^ "'");
     (* FIXME: pass "/dev/stdin" if we can figure out how to tell clang it's C++ *)
-    execv toolPath [|toolPath; newTempName ; "--"|]
+    execv toolPath [|toolPath; hackedTempName ; "--"|]
     )
