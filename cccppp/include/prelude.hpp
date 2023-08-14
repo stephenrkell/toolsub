@@ -1,3 +1,7 @@
+// prelude for cccppp
+// NOTE: this is a .hpp file but it is never preprocessed! it is simply prepended
+// to the output of cccppp-tool.
+
 template <typename Subscripted>
 struct __primop_subscript {};
 
