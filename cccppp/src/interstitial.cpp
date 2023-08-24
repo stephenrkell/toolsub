@@ -1,5 +1,6 @@
 #include <sstream>
 #include <string>
+#include <iostream>
 #ifdef USE_STD_UNIQUE_PTR
 #include <memory>
 #endif
@@ -195,45 +196,52 @@ Initially right interstice is: `0]'                should be ']'
     // forwards and its end backwards.
     // the start of eSubLeft and the start of eSubRight
     // It's easiest to do this right-to-left, and calculating lengths first.
-    unsigned leftIntersticeLength = rangeLength(mkRightOpenRange(eOuter->getSourceRange().getBegin(),
+    unsigned leftIntersticeLength = rangeLength(mkRightOpenRange(eOuter->getSourceRange().getBegin(),                                                                  
        eSubLeft->getSourceRange().getBegin(), false, false));
     unsigned midIntersticeLength = rangeLength(mkRightOpenRange(eSubLeft->getSourceRange().getEnd(),
        eSubRight->getSourceRange().getBegin(), true, false));
     unsigned rightIntersticeLength = rangeLength(mkRightOpenRange(eSubRight->getSourceRange().getEnd(),
-       eOuter->getSourceRange().getEnd(), true, true));
-    /* Now we've got the lengths, get the start positions. */
+       eOuter->getSourceRange().getEnd(), true, true)); 
+    
+    /* Now we've got the lengths, get the start positions. */ 
+    
+    llvm::errs() << "Length of leftInterstice is :-> " << leftIntersticeLength << "\n";
+    llvm::errs() << "Length of midInterstice is :-> " << midIntersticeLength << "\n";   
+    llvm::errs() << "Length of rightInterstice is :-> " << rightIntersticeLength << "\n";
+
     SourceLocation leftIntersticeStart = eOuter->getSourceRange().getBegin();
-    SourceLocation midIntersticeStart = eSubLeft->getSourceRange().getEnd().getLocWithOffset(1);
-    SourceLocation rightIntersticeStart = eSubRight->getSourceRange().getEnd().getLocWithOffset(1);
+    SourceLocation midIntersticeStart = eSubLeft->getSourceRange().getEnd().getLocWithOffset(midIntersticeLength);
+    SourceLocation rightIntersticeStart = eSubRight->getSourceRange().getEnd().getLocWithOffset(rightIntersticeLength);
     SourceLocation leftIntersticeEnd = eSubLeft->getSourceRange().getBegin().getLocWithOffset(-1);
     SourceLocation midIntersticeEnd = eSubRight->getSourceRange().getBegin().getLocWithOffset(-1);
     SourceLocation rightIntersticeEnd = eOuter->getSourceRange().getEnd();
     // now does this work?
-    Optional<SourceRange> leftIntersticeRange = mkStartLengthRange(
-       leftIntersticeStart, leftIntersticeLength);
-    Optional<SourceRange> midIntersticeRange = mkStartLengthRange(
-       midIntersticeStart, midIntersticeLength);
-    Optional<SourceRange> rightIntersticeRange = mkStartLengthRange(
-       rightIntersticeStart, rightIntersticeLength);
-
+    
+    Optional<SourceRange> leftIntersticeRange = //mkStartLengthRange(
+       SourceRange(leftIntersticeStart, leftIntersticeEnd);//leftIntersticeStart, leftIntersticeLength);
+    Optional<SourceRange> midIntersticeRange = //mkStartLengthRange(
+       SourceRange(midIntersticeStart, midIntersticeEnd);//midIntersticeStart, midIntersticeLength);
+    Optional<SourceRange> rightIntersticeRange = //mkStartLengthRange(
+       SourceRange(rightIntersticeStart, rightIntersticeEnd);//rightIntersticeStart, rightIntersticeLength);
+    //
     /* The sum of lengths of the interstices should be equal to the length of the whole expression
      * minus the lengths of the subexpression. */
-    unsigned intersticesLength = rangeLength(leftIntersticeRange)
+    /*unsigned intersticesLength = rangeLength(leftIntersticeRange)
       + rangeLength(midIntersticeRange)
-      + rangeLength(rightIntersticeRange);
+      + rangeLength(rightIntersticeRange);*/  
     //assert(intersticesLength + leftSubLength + rightSubLength == outerLength);
 
-    llvm::errs() << "Initially left interstice (length " << rangeLength(leftIntersticeRange) << ") is:  `"
-      << (!leftIntersticeRange ? "" : TheRewriter.getRewrittenText(*leftIntersticeRange)) << "'\n";
+    llvm::errs() << "Initially left interstice (length " << leftIntersticeLength /*rangeLength(leftIntersticeRange)*/ << ") is:  `"
+        << (!leftIntersticeLength/*leftIntersticeRange*/ ? "" : TheRewriter.getRewrittenText(*leftIntersticeRange)) << "'\n";
     llvm::errs() << "Initially mid interstice (length " << rangeLength(midIntersticeRange) << ") is:  `"
-      << (!midIntersticeRange ? "" : TheRewriter.getRewrittenText(*midIntersticeRange)) << "'\n";
+        << (!midIntersticeRange ? "" : TheRewriter.getRewrittenText(*midIntersticeRange)) << "'\n";
     llvm::errs() << "Initially right interstice (length " << rangeLength(rightIntersticeRange) << ") is: `"
       << (!rightIntersticeRange ? "" : TheRewriter.getRewrittenText(*rightIntersticeRange)) << "'\n";
 
     /* Do three small rewrites, not one big one. */
     if (leftIntersticeRange) TheRewriter.ReplaceText(
       leftIntersticeRange->getBegin(),
-      TheRewriter.getRewrittenText(*leftIntersticeRange).length(),
+      /*TheRewriter.getRewrittenText(*leftIntersticeRange).length()*/leftIntersticeLength,
       leftInterstice
     ); 
     else { TheRewriter.InsertTextBefore(eOuter->getSourceRange().getBegin(), leftInterstice);
@@ -334,6 +342,7 @@ Initially right interstice is: `0]'                should be ']'
           llvm::errs() << "Skipping something under a sizeof, _Alignof, decltype or similar expr!\n";
           return true;
         }
+         
         return false;
       }();
       
@@ -387,6 +396,8 @@ Initially right interstice is: `0]'                should be ']'
       }
       ReplaceBinaryExpressionInterstices(e, e->getLHS(), e->getRHS(),
           leftInterstice, midInterstice, rightInterstice);
+      
+       //added this just to check
       // after replacement, we should still have the same view of the subexpressions
       // FIXME: EXCEPT we can't do this if the LHS begins at the same place as the
       // outer expression
