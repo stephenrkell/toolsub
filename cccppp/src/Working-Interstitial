@@ -1,0 +1,143 @@
+                                                                      | Current Translation Done by Interstitial.cpp| 
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|   When we take:
+|   Optional<SourceRange> leftIntersticeRange = mkStartLengthRange(leftIntersticeStart, leftIntersticeLength);
+|
+|   and replace with this range:
+|   if (leftIntersticeRange) TheRewriter.ReplaceText(
+|      leftIntersticeRange->getBegin(),
+|      TheRewriter.getRewrittenText(*leftIntersticeRange).length(),
+|      leftInterstice
+|   ); 
++__________________________________________________________________________________+___________________________________________________________________________________________________________________+
+|      What we get is this :                                                       |                                                                             				       |
+|      Let us take binary expression: __s[__i]                                     |                                                            						       |
+|                                                                                  |                                        How Interstices Look     						       |
+|      ----------Outer Expression -------------                                    |                                       ----------------------                                                      |
+|      |                                      |                                    |                 **Ignore the spaces in the expression (added space to visualize better)**                         |
+|      v				      v                                    |                                                __s [ __i ]                                                        |
+|       ___primop_subscript<int * >()(__s, __i)                                    |                                              ^^    ^     ^                                                        |
+|       ^                               ^  ^ ^                                     |                                              ||    ||    ||                                                       |
+|       |                               |  | |                                     |   LI : Left Interstices                      LI    MI    RI                                                       |
+|       |_______________________________|  |_|                                     |   RI : Right Interstices                                                                                          |
+|	eLeft                              eRight -> '__i'                         |   MI : Middle Interstices                                                                                         |
+|	 |			                                                   |                                                                                                                   |
+|	 v                                                                         |   In Ideal Case We are getting "MI Start == MI End" and "RI Start == RI End"                                      |
+|    '___primop_subscript<int * >()(__s'                                           |   But in cases where there is actual space like arr [ 0 ] then we are getting                                     |
+|                                                                                  |                                                                                                                   |
+|                                                                                  |   MI Start = [        RI Start = ]                                                                                |
+|                                                                                  |   MI End = ""         RI End = ]                                                                                  |
+|                                                                                  |                                                                                                                   |
+|                                                                                  | MI End is not '['(have to figure out, Whereas RI End is ok) now the twist is the final whole expression we get is:|
+|                                                                                  |                                   `__primop_subscript<int * >()(arr ,  0 )'                                       |
+|                                                                                  |                                                                         |                                         |
+|                                                                                  |                                                                         v                                         |
+|                                                                                  |                                                              Why is there ' ' between ?                           |
++----------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------+
+
+
+
+Good Enough to Push into Main 
+But We should open Issue to solve this particular section
+
+
+
+_________________________________________________________________________________________________________________________________________________________________________________________________________
+
+
+Q) Why SourceLocation is 32 bit ?
+ 
+- The 'SourceLocation' class is important for tracking positions within the source code, particularly for various stages of compilation and analysis.
+This class is designed to be (32 bits in size) to ensure efficiency and memory saving. 
+
+ID (32 bits): This is the core component of a SourceLocation. It contains the actual encoded value that represents the position within the source code. This value is a combination of bits that encode various pieces of information, including the file ID, offset within the file, and whether it's a regular source location or a macro expansion location.
+
+Here's a break down what this 32-bit value represents using a diagram
+
+
++--------------------------------------------------------------------+
+|                                                                    |
+|                       SourceLocation                               |             * Bit-31 : (Macro ID Bit) Indicates whether it's regular source location or macro expansion location 
++--------------------------------------------------------------------+             * Bit-30 to 0: Offset within the file or macro expansion (these bits store the actual position information)
+|                                                                    | 
+|                     Macro ID Bit (Bit 31)                          |
++--------------------------------------------------------------------+            [*] Macro Expansion Location:  Specific point in the source code where a macro has been expanded. 
+|                                                                    |
+|              Offset within the file or macro expansion (Bit 30-0)  |
+|            (These bits store actual position information)          |
+|                                                                    |
+|                                                                    |
++--------------------------------------------------------------------+
+
+SourceLocation Overflow
+-----------------------
+There's a LLVM discussion I found which talks about overflow in SourceLocation.
+(https://discourse.llvm.org/t/rfc-clang-sourcelocation-overflow/57541)
+
+Basically when a large file is included multiple times using #include directives, it can lead to an overflow issue with the SourceLocation values in Clang. The repeated inclusions cause the cumulative size of included files to exceed the capacity that can be represented by the 32-bit SourceLocation, resulting in an overflow problem. This overflow can impact how the compiler tracks positions within the source code and may lead to unexpected behavior or errors. 
+
+There's another discussion on why SourceLocation needs to be 64 bit
+(https://discourse.llvm.org/t/macro-performance-lexer-and-sourcemanager/65713/6)
+
+
+There is also a point that mentions this as current limitation in Clang's Compiler User Manual:
+Some source locations are not displayed correctly. The front end has a more detailed source location tracking than the locations included in the debug info (e.g., the front end can locate code inside macro expansions). However, the locations used by -Rpass are translated from debug annotations. That translation can be lossy, which results in some remarks having no location information.
+(https://intel.github.io/llvm-docs/clang/UsersManual.html)
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+AddInsertDelta (Inside Rewrite.cpp of Clang Directory)
+------------------------------------------------------
+
+/// AddInsertDelta - When an insertion is made at a position, this
+  /// method is used to record that information.
+  void AddInsertDelta(unsigned OrigOffset, int Change) {
+    return Deltas.AddDelta(2*OrigOffset, Change);
+  }
+  
+AddDelta (Inside DeltaTree.cpp of Clang Rewrite Directory)
+---------------------------------------------------------
+ /// this method is used to record that info.  It inserts a delta of 'Delta'
+/// into the current DeltaTree at offset FileIndex.
+void DeltaTree::AddDelta(unsigned FileIndex, int Delta) {
+  assert(Delta && "Adding a noop?");
+  DeltaTreeNode *MyRoot = getRoot(Root);
+ 
+  DeltaTreeNode::InsertResult InsertRes;
+  if (MyRoot->DoInsertion(FileIndex, Delta, &InsertRes)) {
+    Root = new DeltaTreeInteriorNode(InsertRes);
+#ifdef VERIFY_TREE
+    MyRoot = Root;
+#endif
+  }
+  
+ 
+
+								        +_____________________+
+									|Overview of DeltaTree|
++-----------------------------------------------------------------------+---------------------+-----------------------------------------------------------------------------------+
+|DeltaTree : Maintains information about how source code changes affect the positions within a source code buffer. It tracks changes such as insertions and deletions of code and |
+|allows fast lookups to determine the accumulated delta at any specfic file offset                                                                                                |
+|                                    																		  |
+|					                                  DeltaTree (Root)										          |
+|					                                        | 												  |
+|			                                   +-----------+-----------+----------+---------+                                                                         |
+|			                                   |           |           |          |         | 	                                                                  |
+|  		                                           v           v           v          v         v		                                                          |
+|  		                                        Node A       Node B       Node C    Node D   Node E	                                                                  |
+|  		                                           |           |           |          |         |		                                                          |
+|  		                                           v           v           v          v         v		                                                          |
+|  		                                        Value 1      Value 2     Value 3    Value 4  Value 5		                                                          |
+|  		      																				  |
+|In this low-level representaion:																		  |
+|(*) 'DeltaTree' : The top-level structure representing the entire 'DeltaTree'.													  |
+|(*) 'Node A', 'Node B', 'Node C', 'Node D', 'Node E' : Interior Nodes in B-Tree structure											  |
+|(*) 'Value1, Value2, Value3, Value4, Value5: Leaf nodes (or final partitions) that store SourceDelta values.									  |
+|																						  |
+|-Each interior node (e.g 'Node A' to 'Node E') may have multiple child nodes and values. I have shown only one child node and one value per interior node for sake of simplicity |
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+
+

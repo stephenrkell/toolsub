@@ -20,7 +20,7 @@ struct __has_subscript_overload
     template <class U>
     static auto subscript_test(const U* u) -> decltype(operator[]((*u), 0), char(0)) {}
     // a static member function that returns a length-2 thing
-    static short subscript_test(...) {}
+    static short subscript_test(...) {return 0;}
     static const bool value = (sizeof(subscript_test((T*)0)) == 1);
 };
 

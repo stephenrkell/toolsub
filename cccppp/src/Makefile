@@ -52,7 +52,8 @@ interstitial-tool: interstitial.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 dump: dump.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
-
+simple-tool: simple.o  
+	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
