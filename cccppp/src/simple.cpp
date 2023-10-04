@@ -2,6 +2,8 @@
 #include <string>
 #ifdef USE_STD_UNIQUE_PTR
 #include <memory>
+#include <set>
+#include <vector>
 #endif
 
 #include "clang/AST/AST.h"
@@ -36,6 +38,9 @@ using std::make_unique;
 #else
 using llvm::make_unique;
 #endif
+
+std::set<unsigned int> statementOffsets;
+std::vector<std::pair<unsigned int, unsigned int>> rewrittenRanges;
 
 class SimpleRewriteASTVisitor : public RecursiveASTVisitor<SimpleRewriteASTVisitor> {
 public:
@@ -90,9 +95,12 @@ public:
       << TheRewriter.getRewrittenText(eSubRight->getSourceRange()) << "'\n";
     llvm::errs() << "Initially whole binary expression is: `"
       << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
+    std::string rewrittenStmt =  TheRewriter.getRewrittenText(eOuter->getSourceRange());
+    assert(rewrittenStmt.length() < 2048);
+    assert(overallReplacement.length() < 2048);
      TheRewriter.ReplaceText(
       eOuter->getSourceRange().getBegin(),
-      TheRewriter.getRewrittenText(eOuter->getSourceRange()).length(),
+      rewrittenStmt.length(),
       overallReplacement
      );
     llvm::errs() << "Now left-hand subexpression is:  `"
@@ -110,6 +118,8 @@ public:
    *    ref'ing the decl of the operator being called, i.e. an operator[].
    * In Clang, expressions (Expr) are a kind of statement (Stmt).
    */
+
+  int count = 0;
   bool VisitStmt(Stmt *s) {
     /* We have to look at the AST context to decide whether to skip this. 
      * We skip if
@@ -118,6 +128,8 @@ public:
      * (2) we're in a context like addr-of, sizeof or decltype where the code
      *        is not actually being executed.
      */
+
+    
     auto parents = TheContext.getParents(*s);
     while (!parents.empty())
     {
@@ -166,12 +178,47 @@ public:
       }
       parents = TheContext.getParents(*parentNode);
     }
+
+     
     if (isa<ArraySubscriptExpr>(s)) {
       /* There are two cases:
        * (1) it's really the builtin array subscript;
        * (2) it's a template that might actually bind to an overload.
        */
       ArraySubscriptExpr *e = cast<ArraySubscriptExpr>(s);
+      
+      unsigned int offset = TheRewriter.getSourceMgr().getFileOffset(e->getLHS()->getBeginLoc()); // Calculate the offset
+      unsigned int endOffset = TheRewriter.getSourceMgr().getFileOffset(e->getRHS()->getEndLoc());
+
+      llvm::errs() << "\e[1;32m Replacing at offset: \e[0m" << "\e[1;32m Beginning offset: \e[0m" << offset << "\e[1;32m Ending offset: \e[0m" << endOffset << "\n";
+      // Check if the current range falls within any previously rewritten range
+      bool withinPreviousRange = false;
+      for (const auto& range : rewrittenRanges) {
+        if (offset == range.first && endOffset == range.second) {
+            withinPreviousRange = true;
+            count++;
+            break;
+        }
+      }
+      /*
+      if(withinPreviousRange){
+        if(count > 1) {
+          llvm::errs() << "Sup You've already seen me!" << "\n";
+          return true;
+        } 
+      } 
+      */
+      std::string string1= "__primop_subscript<";
+      std::string string2= "__maybe_primop_subscript<";
+      
+      std::size_t found1 = TheRewriter.getRewrittenText(e->getLHS()->getSourceRange()).find(string1);
+      std::size_t found2 = TheRewriter.getRewrittenText(e->getLHS()->getSourceRange()).find(string2);
+      
+      if(withinPreviousRange && (found1 != std::string::npos || found2 != std::string::npos)) {
+        llvm::errs() << "Already Translated" << "\n";
+        return true;
+      }
+      
       llvm::errs() << "Post-order-reached a new ArraySubscriptExpr: ";
       e->printPretty(llvm::errs(), nullptr, PrintingPolicy(LangOptions()));
       llvm::errs() << " at ";
@@ -190,36 +237,48 @@ public:
         || indexedType.getTypePtr()->isUndeducedType()))
       {
         replacement = std::string("__primop_subscript<")
-          + indexedType.getAsString()
-          + " >()("
-          + lhBefore
-          + ", "
-          + rhBefore
-          + "                   )";
+        + indexedType.getAsString()
+        + " >()("
+        + lhBefore
+        + ", "
+        + rhBefore
+        + ")";
       }
       else // nasty case
       {
         /* We want to print the type name, or an expression for it,
-         * as it already appears in the code. But in many cases this
-         * comes out as "<dependent type>", and I haven't figured out a
-         * way to make clang print what we want. So use decltype() for now. */
+        * as it already appears in the code. But in many cases this
+        * comes out as "<dependent type>", and I haven't figured out a
+        * way to make clang print what we want. So use decltype() for now. */
         replacement = std::string("__maybe_primop_subscript<")
-          + "decltype("
-          + lhBefore
-          + "), !__has_subscript_overload<decltype(" + lhBefore + ")>::value>()("
-          + lhBefore
-          + ", "
-          + rhBefore
-          + "                   )";
+        + "decltype("
+        + lhBefore
+        + "), !__has_subscript_overload<decltype(" + lhBefore + ")>::value>()("
+        + lhBefore
+        + ", "
+        + rhBefore
+        + "                   )";
       }
-      ReplaceBinaryExpression(e, e->getLHS(), e->getRHS(),
-          replacement);
-      // after replacement, we should still have the same view of the subexpressions
-      // FIXME: EXCEPT we can't do this if the LHS begins at the same place as the
-      // outer expression. So disable these assertions. We'll try again in 'interstitial'.
-      //assert(e->getLHS()->getSourceRange().getBegin() == e->getSourceRange().getBegin()
-      //|| lhBefore == TheRewriter.getRewrittenText(e->getLHS()->getSourceRange()));
-      //assert(rhBefore == TheRewriter.getRewrittenText(e->getRHS()->getSourceRange()));
+      
+        /* unsigned int offset = TheRewriter.getSourceMgr().getFileOffset(e->getBeginLoc()); 
+       
+        if(statementOffsets.find(offset) != statementOffsets.end()) {
+         return false;
+        }   
+        statementOffsets.insert(offset);
+        */
+        /*ReplaceBinaryExpression(e, e->getLHS(), e->getRHS(),
+          replacement);*/
+        // after replacement, we should still have the same view of the subexpressions
+        // FIXME: EXCEPT we can't do this if the LHS begins at the same place as the
+        // outer expression. So disable these assertions. We'll try again in 'interstitial'.
+        //assert(e->getLHS()->getSourceRange().getBegin() == e->getSourceRange().getBegin()
+        //|| lhBefore == TheRewriter.getRewrittenText(e->getLHS()->getSourceRange()));
+        //assert(rhBefore == TheRewriter.getRewrittenText(e->getRHS()->getSourceRange()));
+      
+    
+      ReplaceBinaryExpression(e, e->getLHS(), e->getRHS(), replacement); 
+      rewrittenRanges.emplace_back(offset, endOffset);
     }
     return true;
   }

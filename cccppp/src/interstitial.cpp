@@ -40,6 +40,9 @@ using llvm::make_unique;
 #endif
 using llvm::Optional;
 
+std::set<unsigned int> statementOffsets;
+std::vector<std::pair<unsigned int, unsigned int>> rewrittenRanges;
+
 class SimpleRewriteASTVisitor : public RecursiveASTVisitor<SimpleRewriteASTVisitor> {
 public:
   bool shouldTraversePostOrder() const /* override */ { return true; }
@@ -196,6 +199,20 @@ Initially right interstice is: `0]'                should be ']'
     // forwards and its end backwards.
     // the start of eSubLeft and the start of eSubRight
     // It's easiest to do this right-to-left, and calculating lengths first.
+    //
+    // Is this better name for variables ?
+    /* 
+       unsigned leftIntersticeEstimatedLength = rangeLength(mkRightOpenRange(eOuter->getSourceRange().getBegin(),
+          eSubLeft->getSourceRange().getBegin(), false, false));
+       unsigned beforeMidIntersticeEstimatedLength = rangeLength(mkRightOpenRange(eSubLeft->getSourceRange().getEnd(),
+          eSubRight->getSourceRange().getBegin(), true, false));
+       unsigned rightIntersticeEstimatedLength = rangeLength(mkRightOpenRange(eSubRight->getSourceRange().getEnd(),
+          eOuter->getSourceRange().getEnd(), true, true));
+    */
+
+    // or something like this: beforelhSubExprLength, lhSubExprLength, afterRhExprLength
+     
+
     unsigned leftIntersticeLength = rangeLength(mkRightOpenRange(eOuter->getSourceRange().getBegin(),                                                                  
        eSubLeft->getSourceRange().getBegin(), false, false));
     unsigned midIntersticeLength = rangeLength(mkRightOpenRange(eSubLeft->getSourceRange().getEnd(),
@@ -210,11 +227,28 @@ Initially right interstice is: `0]'                should be ']'
     llvm::errs() << "Length of rightInterstice is (according to range) :-> " << rightIntersticeLength << "\n";
 
     SourceLocation leftIntersticeStart = eOuter->getSourceRange().getBegin();
-    SourceLocation midIntersticeStart = eSubLeft->getSourceRange().getEnd().getLocWithOffset(midIntersticeLength); 
-    SourceLocation rightIntersticeStart = eSubRight->getSourceRange().getEnd().getLocWithOffset(rightIntersticeLength); 
-    SourceLocation leftIntersticeEnd = eSubLeft->getSourceRange().getBegin().getLocWithOffset(-1); 
+    std::pair<FileID, unsigned> leftStartDecomposedLoc = TheRewriter.getSourceMgr().getDecomposedLoc(leftIntersticeStart);
+    llvm::errs() << "DecomposedLoc for LeftStartInterstice :-> " << leftStartDecomposedLoc.second << "\n";
+
+    SourceLocation midIntersticeStart = eSubLeft->getSourceRange().getEnd().getLocWithOffset(midIntersticeLength);
+    std::pair<FileID, unsigned> midStartDecomposedLoc = TheRewriter.getSourceMgr().getDecomposedLoc(midIntersticeStart);
+    llvm::errs() << "DecomposedLoc for MidStartInterstice :-> " << midStartDecomposedLoc.second << "\n";
+
+    SourceLocation rightIntersticeStart = eSubRight->getSourceRange().getEnd().getLocWithOffset(rightIntersticeLength);
+    std::pair<FileID, unsigned> rightStartDecomposedLoc = TheRewriter.getSourceMgr().getDecomposedLoc(rightIntersticeStart);
+    llvm::errs() << "DecomposedLoc for RightStartInterstice :-> " << rightStartDecomposedLoc.second << "\n";
+
+    SourceLocation leftIntersticeEnd = eSubLeft->getSourceRange().getBegin().getLocWithOffset(-1); //Initially it was set to -1
+    std::pair<FileID, unsigned> leftEndDecomposedLoc = TheRewriter.getSourceMgr().getDecomposedLoc(leftIntersticeEnd);
+    llvm::errs() << "DecomposedLoc for LeftEndInterstice :-> " << leftEndDecomposedLoc.second << "\n"; 
+    
     SourceLocation midIntersticeEnd = eSubRight->getSourceRange().getBegin().getLocWithOffset(-1);
+    std::pair<FileID, unsigned> midEndDecomposedLoc = TheRewriter.getSourceMgr().getDecomposedLoc(midIntersticeEnd);
+    llvm::errs() << "DecomposedLoc for MidEndInterstice :-> " << midEndDecomposedLoc.second << "\n";
+
     SourceLocation rightIntersticeEnd = eOuter->getSourceRange().getEnd(); 
+    std::pair<FileID, unsigned> rightEndDecomposedLoc = TheRewriter.getSourceMgr().getDecomposedLoc(rightIntersticeEnd);
+    llvm::errs() << "DecomposedLoc for RightEndInterstice :-> " << rightEndDecomposedLoc.second << "\n";
     // now does this work?
     
     Optional<SourceRange> leftIntersticeRange = mkStartLengthRange(
@@ -222,8 +256,8 @@ Initially right interstice is: `0]'                should be ']'
     Optional<SourceRange> midIntersticeRange = //mkStartLengthRange(
        SourceRange(midIntersticeStart, midIntersticeEnd);/*midIntersticeStart, midIntersticeLength)*/;
     Optional<SourceRange> rightIntersticeRange = //mkStartLengthRange(
-       SourceRange(rightIntersticeStart, rightIntersticeEnd); /*rightIntersticeStart, rightIntersticeLength)*/;
-    //
+       SourceRange(rightIntersticeStart, rightIntersticeEnd); /*rightIntersticeStart, rightIntersticeLength);*/
+    
     /* The sum of lengths of the interstices should be equal to the length of the whole expression
      * minus the lengths of the subexpression. */
     /*unsigned intersticesLength = rangeLength(leftIntersticeRange)
@@ -237,7 +271,7 @@ Initially right interstice is: `0]'                should be ']'
         << (!midIntersticeRange ? "" : TheRewriter.getRewrittenText(*midIntersticeRange)) << "'\n";
     llvm::errs() << "Initially right interstice (length " << rangeLength(rightIntersticeRange) << ") is: `"
       << (!rightIntersticeRange ? "" : TheRewriter.getRewrittenText(*rightIntersticeRange)) << "'\n";
-
+ 
     /* Do three small rewrites, not one big one. */
     if (leftIntersticeRange) TheRewriter.ReplaceText(
       leftIntersticeRange->getBegin(),
@@ -273,7 +307,7 @@ Initially right interstice is: `0]'                should be ']'
       midIntersticeRange->getBegin(),
       TheRewriter.getRewrittenText(*midIntersticeRange).length(),
       midInterstice
-    ); else TheRewriter.InsertTextAfter(eSubLeft->getSourceRange().getEnd(), midInterstice);
+    ); else TheRewriter.InsertTextAfter(eSubLeft->getSourceRange().getEnd().getLocWithOffset(midIntersticeLength), midInterstice);
     if (rightIntersticeRange) TheRewriter.ReplaceText(
       rightIntersticeRange->getBegin(),
       TheRewriter.getRewrittenText(*rightIntersticeRange).length(),
@@ -374,7 +408,31 @@ Initially right interstice is: `0]'                should be ']'
       std::string leftInterstice;
       std::string midInterstice = ", ";
       std::string rightInterstice = ")";
+         
+      unsigned int offset = TheRewriter.getSourceMgr().getFileOffset(e->getLHS()->getBeginLoc()); // Calculate the offset
+      unsigned int endOffset = TheRewriter.getSourceMgr().getFileOffset(e->getRHS()->getEndLoc());
+
+      llvm::errs() << "\e[1;32m Replacing at offset: \e[0m" << "\e[1;32m Beginning offset: \e[0m" << offset << "\e[1;32m Ending offset: \e[0m" << endOffset << "\n";
+      // Check if the current range falls within any previously rewritten range
+      bool withinPreviousRange = false;
+        for (const auto& range : rewrittenRanges) {
+          if (offset == range.first && endOffset == range.second) {
+            withinPreviousRange = true;
+            break;
+        }
+      }
+
+      std::string string1= "__primop_subscript<";
+      std::string string2= "__maybe_primop_subscript<";
       
+      std::size_t found1 = TheRewriter.getRewrittenText(e->getLHS()->getSourceRange()).find(string1);
+      std::size_t found2 = TheRewriter.getRewrittenText(e->getLHS()->getSourceRange()).find(string2);
+      
+      if(withinPreviousRange && (found1 != std::string::npos || found2 != std::string::npos)) {
+        llvm::errs() << "Already Translated" << "\n";
+        return true;
+      }
+
       if (!(indexedType.getTypePtr()->isTemplateTypeParmType()
         || indexedType.getTypePtr()->isDependentType()
         || indexedType.getTypePtr()->isInstantiationDependentType()
@@ -397,11 +455,14 @@ Initially right interstice is: `0]'                should be ']'
           + "decltype("
           + lhBefore
           + "), !__has_subscript_overload<decltype(" + lhBefore + ")>::value>()(";
+
+        //This was not here before 
       }
       
       ReplaceBinaryExpressionInterstices(e, e->getLHS(), e->getRHS(),
           leftInterstice, midInterstice, rightInterstice);
       
+      rewrittenRanges.emplace_back(offset, endOffset);
        //added this just to check
       // after replacement, we should still have the same view of the subexpressions
       // FIXME: EXCEPT we can't do this if the LHS begins at the same place as the
@@ -412,9 +473,7 @@ Initially right interstice is: `0]'                should be ']'
     }
     return true;
   }
-  int countParanthesisOccurences(const std::string &str, char ch) {
-    return std::count(str.begin(), str.end(), ch);
-  }
+  
 private:
   Rewriter &TheRewriter;
   ASTContext &TheContext;
