@@ -121,8 +121,28 @@ let scanAndChunkCppArgs (argList: string list) : string list list * basic_arg_in
                  * We might have -MF in the mix too, though. That means we should output the
                  * dependencies to *both* files, I think.
                  * Final complication: if we have -MD and -E on the command line, it changes
-                 * the semantics of -o. Since we want to be able to *add* both -E and -o,
+                 * the semantics of -o.
+                        -MD -MD is equivalent to -M -MF file, except that -E is not implied.
+
+                          [WHERE:]
+
+                          -M:  Instead of outputting the result of preprocessing, output a rule...
+                               ... implies -E ...
+                          -MF: When used with -M or -MM, specifies a file to write the
+                               dependencies to.  If no -MF switch is given the preprocessor sends
+                               the rules to the same place it would have sent preprocessed output.
+
+                        [for -MD:]
+                        The driver determines file based on whether an -o option is given.
+                        If it is, the driver uses its argument but with a suffix of .d,
+                        otherwise it takes the name of the input file, removes any
+                        directory components and suffix, and applies a .d suffix.
+
+                 * Since we want to be able to *add* both -E and -o,
                  * with their usual meanings, we must delete -MD and simulate it.
+                 * We can ALMOST simulate -MD using -MF because we are always running the preprocessing
+                 * step separately, i.e. "implying -E" is always fine with us.
+                 * (PROBLEM: -MF seems to disable the preprocessed output! Or at least -M -MF does.)
                  *
                  * We handle this as follows.
                  *
@@ -134,9 +154,35 @@ let scanAndChunkCppArgs (argList: string list) : string list list * basic_arg_in
                  * If *both* -MD <file> and -MF <file> are present, which one wins? The
                  * answer is -MF. We don't generate both.
                  *
-                 * FIXME: handle case where the user passed -E -MD -o <depoutputfile> to the driver.
+                 * GAH: our approach of rewriting -MD to -M -MF <file> means that preprocessor output
+                 * is suppressed! We get an empty .i file as our output. Do we need to do two runs to
+                 * handle cases where the user passed       (no -E) -MD -o <realoutputfile> to the driver?
+                 * Maybe not: I can get the behaviour with (tested with GCC 9's cc1)
+                 * /path/to/cc1 -quiet -MD foo.d -E foo.c -o foo.i
+                 *
+                 * So how does that differ from what we actually run?
+                 * We start with
+                 * cc -MD -E -o foo.i foo.c
+                 * ... and rewrite it to
+                 * cc -E foo.c -o foo.i -M -MF foo.d
+                 * ... which -### reveals becomes a cc1 command
+                 * cc1 -E -quiet -M -MF foo.d foo.c -o foo.i
+                 * The difference is we do "-M -MF file" whereas what works is "-MD file".
+                 * Note that this '-MD file' is specific to cc1; and presumably means
+                 * "write deps side effectingly" -- whereas cc and cpp do not take an option to -MD.
+                 *
+                 * I think the fix is to pass -MD -MF <file> instead of -M -MF <file>
+                 * in cases where -M was not passed originally, i.e. where side-effecting output was requested.
+                 * We risk triggering the extra behaviour "uses [-o's] argument but with a suffix of .d",
+                 * but if we also give -MF it's probably harmless if it just generates the depfile twice
+                 * (once in the -MF file, once in the -o) -- CHECK that it does this.
+                 *
+                 * FIXME: also handle case where the user passed -E -MD -o <depoutputfile>  to the driver.
+                 *
+                 * vvv- I wrote the below but now I don't see it happening...
                  * NOTE that the use of -MD without -MF is already handled by the driver, which
-                 * generates the extra argument to -MF. So CHECK whether the other works too. *)
+                 * generates the extra argument to -MF. So CHECK whether the other works too.
+                 *)
           | "-MD" -> (seenMd := true; readingExtraArg := Some(`ArgNamingDependencyOutputFile(false)); [])
           | "-MMD" -> (seenMd := true; readingExtraArg := Some(`ArgNamingDependencyOutputFile(false)); [])
           | "-MF" -> (seenMf := true; readingExtraArg := Some(`ArgNamingDependencyOutputFile(true)); [])
