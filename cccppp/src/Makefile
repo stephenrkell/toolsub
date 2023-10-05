@@ -11,7 +11,7 @@ LLVM_CONFIG ?= llvm-config-13
 # possibly be relevant... the linker will figure otu what to pull in.
 # This changes by version of LLVM. They are all in a group, so
 # the order doesn't matter (it's alphabetical).
-dump cccppp-tool interstitial-tool simple-tool: LDLIBS += \
+dump cccppp-tool interstitial-tool simple-tool easyTool-tool: LDLIBS += \
         -Wl,--start-group \
         -lclangAST \
         -lclangASTMatchers \
@@ -52,7 +52,8 @@ interstitial-tool: interstitial.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 dump: dump.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
-
+simple-tool: simple.o  
+	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
