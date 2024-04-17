@@ -1,5 +1,11 @@
 (* compiler_args.ml: -- a simple bit of compiler wrapping, intended
- * for custom preprocessors (cilpp, cccppp). *)
+ * for custom preprocessors (cilpp, cccppp).
+ *
+ * This file *only* knows about the C preprocessor and its command line.
+ * It is *NOT* concerned with cc or cc1 commands -- except that it will
+ * sometimes generate a command line for them, one as a way to run the
+ * "correct" "real" C preprocessor.
+ *)
 
 
 open Printf
@@ -32,13 +38,45 @@ type basic_arg_info = {
     minus_o_pos     : int option;
     output_file     : string option;
     deps_outputfile : string option;
+    suppress_ppout  : bool;
     driver          : string option;
     language_std    : string option;
     input_language  : string option
 };;
 
-(* It is surprisingly tricky to figure out which 'cpp' to run and with which
- * arguments. *)
+(* Given a cpp invocation that has already been scanned using scanAndChunkCppArgs,
+ * figure out how to run the "real" C preprocessor it requires.
+ *
+ * It is surprisingly tricky to figure out which 'cpp' to run and with which
+ * arguments.
+ *
+ * We don't always run a 'cpp' at all' we sometimes instead use "$driver -E". This
+ * may have unwanted consequences: according to the GCC manual, in a driver
+ * command, "-MD" changes the semantics of "-o" if "-E" is also present.
+ *
+           If -MD is used in conjunction with -E, any -o switch is
+           understood to specify the dependency output file, but if used
+           without -E, each -o is understood to specify a target object
+           file.
+ *
+ * So that would mean that
+ * if "-MD" and "-E" is present, "-o" is equivalent to "-MF", whereas
+ * if just "-MD" is present, "-o" names an output file of compilation.
+ * My attempts to validate this have failed, however.
+ * $ rm -f hello.o hello.i hello.d && cc -E -MD -o hello.o hello.c
+ * $ file hello.o
+ * hello.o: C source, ASCII text
+ * $ rm -f hello.o hello.i hello.d && cc -MD -o hello.o hello.c
+ * $ file hello.o
+ * hello.o: hello.o: ELF 64-bit LSB pie executable...
+ *
+ * ... so I think reality is simpler.
+ *
+ * Ideally we would output a "driver-safe" version of the invocation, i.e. one
+ * where "-o" never appears together with "-MD". We can just do "-MD" "-MF" with
+ * the driver to set explicitly the dependency output filename. And since the
+ * "-o means dependency file" semantics doesn't seem to happen, I think we are OK.
+ *)
 let guessCppCommandAndLang (info : basic_arg_info) : (string list) * string =
   let langOfStd std =
       if info.input_language <> None then really info.input_language
@@ -64,7 +102,12 @@ let guessCppCommandAndLang (info : basic_arg_info) : (string list) * string =
   in
   let depsArgs = match info.deps_outputfile with
      None -> []
-   | Some(depsFile) -> ["-M"; "-MF"; depsFile]
+   | Some(depsFile) -> ["-MD"; "-MF"; depsFile]
+   (* FIXME: this forces the "side-effecting" behaviour of -MD. But it's possible
+    * to run cpp with just -M or -MM, and send the depfile to stdout or wherever -o says.
+    * In such cases, we are not really preprocessing at all. We should filter these out
+    * before we get to here: if we're 'cpp' it's when we see '-M' or '-MM'. cilpp now
+    * does this, but perhaps it should be in the wrapper scripts. *)
   in
   match info.driver with
     None -> (match info.language_std with
@@ -85,8 +128,8 @@ let scanAndChunkCppArgs (argList: string list) : string list list * basic_arg_in
     let seenStd = ref None in
     let originalOutFile = ref None in
     let driver = ref None in
-    let seenMd = ref false in
     let seenMf = ref false in
+    let seenMOrMm = ref None in
     let depsOutputFile = ref None in
     let explicitLang = ref None in
     let readingExtraArg = ref None in
@@ -114,79 +157,10 @@ let scanAndChunkCppArgs (argList: string list) : string list list * basic_arg_in
           | s when None <> matchesPrefix "-std=" s ->
                 (seenStd := matchesPrefix "-std=" s; [s])
           | "-x" -> (readingExtraArg := Some(`ArgNamingLang); [])
-          | "-plugin" -> (readingExtraArg := Some(`ArgNamingPlugin); [])
-                (* NOTE that the driver adds an extra arg to -MD, and indeed that's the point of
-                 * -MD as opposed to -MF. So don't be deceived by the manual pages showing -MD
-                 * without an argument: it really does have an argument as far as we're concerned.
-                 * We might have -MF in the mix too, though. That means we should output the
-                 * dependencies to *both* files, I think.
-                 * Final complication: if we have -MD and -E on the command line, it changes
-                 * the semantics of -o.
-                        -MD -MD is equivalent to -M -MF file, except that -E is not implied.
-
-                          [WHERE:]
-
-                          -M:  Instead of outputting the result of preprocessing, output a rule...
-                               ... implies -E ...
-                          -MF: When used with -M or -MM, specifies a file to write the
-                               dependencies to.  If no -MF switch is given the preprocessor sends
-                               the rules to the same place it would have sent preprocessed output.
-
-                        [for -MD:]
-                        The driver determines file based on whether an -o option is given.
-                        If it is, the driver uses its argument but with a suffix of .d,
-                        otherwise it takes the name of the input file, removes any
-                        directory components and suffix, and applies a .d suffix.
-
-                 * Since we want to be able to *add* both -E and -o,
-                 * with their usual meanings, we must delete -MD and simulate it.
-                 * We can ALMOST simulate -MD using -MF because we are always running the preprocessing
-                 * step separately, i.e. "implying -E" is always fine with us.
-                 * (PROBLEM: -MF seems to disable the preprocessed output! Or at least -M -MF does.)
-                 *
-                 * We handle this as follows.
-                 *
-                 * We delete both -MD and -MF and then selectively reinstate them.
-                 * We never use -MD for real because we want to re-run the driver -E and -o, and
-                 * the combination -MD, -E and -o changes the meaning of -MD. So we should use
-                 * multiple -MF options.
-                 *
-                 * If *both* -MD <file> and -MF <file> are present, which one wins? The
-                 * answer is -MF. We don't generate both.
-                 *
-                 * GAH: our approach of rewriting -MD to -M -MF <file> means that preprocessor output
-                 * is suppressed! We get an empty .i file as our output. Do we need to do two runs to
-                 * handle cases where the user passed       (no -E) -MD -o <realoutputfile> to the driver?
-                 * Maybe not: I can get the behaviour with (tested with GCC 9's cc1)
-                 * /path/to/cc1 -quiet -MD foo.d -E foo.c -o foo.i
-                 *
-                 * So how does that differ from what we actually run?
-                 * We start with
-                 * cc -MD -E -o foo.i foo.c
-                 * ... and rewrite it to
-                 * cc -E foo.c -o foo.i -M -MF foo.d
-                 * ... which -### reveals becomes a cc1 command
-                 * cc1 -E -quiet -M -MF foo.d foo.c -o foo.i
-                 * The difference is we do "-M -MF file" whereas what works is "-MD file".
-                 * Note that this '-MD file' is specific to cc1; and presumably means
-                 * "write deps side effectingly" -- whereas cc and cpp do not take an option to -MD.
-                 *
-                 * I think the fix is to pass -MD -MF <file> instead of -M -MF <file>
-                 * in cases where -M was not passed originally, i.e. where side-effecting output was requested.
-                 * We risk triggering the extra behaviour "uses [-o's] argument but with a suffix of .d",
-                 * but if we also give -MF it's probably harmless if it just generates the depfile twice
-                 * (once in the -MF file, once in the -o) -- CHECK that it does this.
-                 *
-                 * FIXME: also handle case where the user passed -E -MD -o <depoutputfile>  to the driver.
-                 *
-                 * vvv- I wrote the below but now I don't see it happening...
-                 * NOTE that the use of -MD without -MF is already handled by the driver, which
-                 * generates the extra argument to -MF. So CHECK whether the other works too.
-                 *)
-          | "-MD" -> (seenMd := true; readingExtraArg := Some(`ArgNamingDependencyOutputFile(false)); [])
-          | "-MMD" -> (seenMd := true; readingExtraArg := Some(`ArgNamingDependencyOutputFile(false)); [])
+          | "-M" -> (seenMOrMm := Some("-M"); [arg])
+          | "-MM" -> (seenMOrMm := Some("-MM"); [arg])
           | "-MF" -> (seenMf := true; readingExtraArg := Some(`ArgNamingDependencyOutputFile(true)); [])
-          | "-MMF" -> (seenMf := true; readingExtraArg := Some(`ArgNamingDependencyOutputFile(true)); [])
+          (* there is no -MMF *)
           | _ -> (
             let wasReadingExtraArg = !readingExtraArg in
             readingExtraArg := None;
@@ -196,36 +170,21 @@ let scanAndChunkCppArgs (argList: string list) : string list list * basic_arg_in
               | Some(`ArgNamingOutputFile) -> originalOutFile := Some(arg); ["-o"; arg]
               | Some(`ArgNamingLang) -> explicitLang := Some(arg); ["-x"; arg]
               | Some(`ArgNamingDependencyOutputFile(nameIsExplicitlyRequested)) -> (
-                    if !depsOutputFile = None || nameIsExplicitlyRequested
+                    if !depsOutputFile = None || nameIsExplicitlyRequested (* always true, currently *)
                     then depsOutputFile := Some(arg) else (); [])
+              (* pattern-match failure here means we created a bad Some(...)
+               * maybe due to using a polymorphic variant belonging to a 'subclass'? *)
            )
         ) argList
     in (chunkedArgs, {
       minus_o_pos     = !minusOPos;
       output_file     = !originalOutFile;
       deps_outputfile = !depsOutputFile;
+      suppress_ppout  = None <> !seenMOrMm;
       driver          = !driver;
       language_std    = !seenStd;
       input_language  = !explicitLang
     })
-
-
-(* FIXME: this function should be unwrapped into arg-processing and cpp-invoking parts.
- * We really do a few separate things:
- * - filter out cilpp arguments (-save-temps, -driver, -plugin, -pass)
- * - chunk arguments according to meaning (... "-o", file... -> ... ["-o", file] ... 
- * - rewrite them as needed for our redirection and simulation of -MD
- *      (simulation of -MD is a side-effect of always passing -o,
- *      which changes the meaning of -MD -- see below)
- *
- * Probably the right factoring is functions which do the following
- *  - scan and chunk args, outputting a record of 'interesting information'
- *  - filter out cilpp's arguments  (this one can go in cilpp... or does our "-driver" hack
- *          generalise beyond cilpp? yes -- it's how we know how to invoke the preprocessor;
- *          any preprocessor tap or filter needs this)
- *  - rewrite to divert to a temporary file
- *)
-
 
 let runCommand cmdFriendlyName argvList =
     (*

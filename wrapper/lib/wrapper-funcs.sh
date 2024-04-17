@@ -11,96 +11,37 @@ debug_print () {
     lvl="$1"
     shift
     if [[ "$DEBUG_CC" -ge $lvl ]]; then
-        echo "$@" 1>&2 # don't use 1>&2 -- callers do it (FIXME: why?)
+        echo "$@" 1>&2
     fi
 }
 
-run_with_replacement_outfile () {
-    replacement="$1"
-    declare -a args
-    ctr=0
-    while shift; do
-        ctr="$(( $ctr + 1 ))"
-        if [[ -z "$1" ]]; then continue; fi
-        case "$1" in
-         (-o) args[$ctr]="$1"; args[$(( $ctr + 1 ))]="$replacement"; shift; ctr="$(( $ctr + 1 ))" ;;
-         (*)  args[$ctr]="$1" ;;
-        esac
-    done
-    debug_print 1 "Running + replacement outfile: ${args[@]}" 1>&2
-    "${args[@]}"
-}
-
-# FIXME: replace this with use of norm_cc1_options
-run_with_replacement_infile () {
-    # Scan a command line, identify the input file and replace it with $1
-    # PROBLEM: how do we identify the input filename?
-    # Doing this generally means understanding cpp's entire command-line syntax.
-    # We instead use a HACK:
-    # for gcc we only need understand the options -E -quiet -imultiarch x86_64-linux-gnu
-    # ... which (1) come first, and (2) cpp *doesn't* understand.
-    replacement="$1"
-    debug_print 1 "Trying to replace input file given args: $@" 1>&2
-    shift
-    declare -a args
-    args[1]="$1"
-    ctr=2
-    orig_infile=""
-    must_read_arg=""
-    handle_possible_infile () {
-        if [[ -z "$orig_infile" ]]; then
-            debug_print 1 "We think the input file is $1" 1>&2
-            orig_infile="$1";
-            args[$ctr]="$replacement"
-        else
-            args[$ctr]="$1"
-        fi
-    }
-    while shift; do
-        ctr="$(( $ctr + 1 ))"
-        if [[ -n "$must_read_arg" ]]; then
-            args[$ctr]="$1"
-            must_read_arg=""
-            continue
-        fi
-        if [[ -z "$1" ]]; then continue; fi
-        case "$1" in
-            (-E|-quiet) ;; # skip it!
-            (-D|-U|-include) must_read_arg=1; args[$ctr]="$1" ;;
-            (-imultiarch|-iremap) shift || break ;; # skip it and its arg!
-            (--) no_more_options=1 ;;
-            (-*) if [[ -z "$no_more_options" ]]; then args[$ctr]="$1"; else handle_possible_infile "$1"; fi ;;
-            (*) handle_possible_infile "$1" ;;
-        esac
-    done
-    debug_print 1 "Running + replacement infile ($replacement): ${args[@]}" 1>&2
-    "${args[@]}"
-}
-
+# nasty HACK: examine the parent process's command line to guess the driver
+# This isn't *so* bad, because as a wrapper script we can be pretty sure that
+# we are caller directly by the driver.
 guess_driver () {
     driver="$( ps -p $PPID -o comm= )"
     debug_print 1 "driver binary is probably $driver" 1>&2
     echo "$driver"
 }
 
-# Build the array of options to pass our preprocessing tool,
-# given the options that the compiler driver wanted to pass to cc1
-# -- which has its own built-in cpp! Some options won't be understood
-# by the standalone cpp, so we have to filter these out.
-
-
 # We want to allow a "drop-in cpp replacement" when in fact, when
 # compiling C code, even with -no-integrated-cpp, cpp /per se/ is never run.
 # Rather, a separate cc1 invocation is done... but the details of its command
-# line are rather compiler-specific. It would be more robust simply to run
-# that command to get our preprocessing done, and fit our extra processing
-# as pre- and/or post-passes.
-write_cpp_options_from_cc1_options () {
-    declare -a norm_cc1_options
-    normalize_cc1_options "$@"
-    do_write_cpp_options "${norm_cc1_options[@]}"
+# line are rather compiler-specific. We try to turn these into cpp options.
+#
+# In this and subsequent functions we take a full command, i.e. with "$1" being
+# the command name, even though we only really care about the options. This is
+# to allow us to write "while shift || break ...", which is handy since bash
+# lacks a do--while loop. The alternative "while true" has the downside that a
+# "continue" will make it loop infinitely.
+write_cpp_options_from_cc1_command () {
+    declare -a norm_cc1_command
+    write_normalized_cc1_options_from_cc1_command "$@"
+    # the normalized options lack the initial command, so add it back
+    do_write_cpp_options_from_normalized_cc1_command "$1" "${norm_cc1_options[@]}"
 }
-do_write_cpp_options () {
+# take a cc1 command with normalized options, write cpp options
+do_write_cpp_options_from_normalized_cc1_command () {
     ctr=0
     while shift || break; do
         debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
@@ -152,14 +93,58 @@ do_write_cpp_options () {
     fi
 }
 
+write_cc_options_from_cc1_command () {
+    declare -a norm_cc1_options
+    write_normalized_cc1_options_from_cc1_command "$@"
+    # the normalized options lack the initial command, so add it back
+    do_write_cc_options_from_normalized_cc1_command "$1" "${norm_cc1_options[@]}"
+}
+# given command, write options
+do_write_cc_options_from_normalized_cc1_command () {
+    debug_print 1 "writing cc options for $@" 1>&2
+    ctr=0
+    while shift || break; do
+        debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
+        if [[ $# -eq 0 ]]; then break; fi
+        case "$1" in
+            # we are running our own .i-to-.s pass -- filter out cpp-only args
+            (-imultiarch|-iremap*) shift || break ;; # skip arg too
+            (-quiet|-fhonour-copts) ;; # skip just it
+            (-MD|-MMD) # NASTY: with cc1, -MD has an argument! it's the filename, like with -MF.
+                # with cc or cpp, we have to use -MM?D -MF
+                cc_options[$ctr]="$1"
+                ctr=$(( $ctr + 1 ))
+                shift # now $1 is the filename argument
+                cc_options[$ctr]="-MF"
+                ctr=$(( $ctr + 1 ))
+                cc_options[$ctr]="$1"
+                ctr=$(( $ctr + 1 ))
+            ;;
+            (*)
+                debug_print 2 "Write-cc: snarfing $1" 1>&2
+                cc_options[$ctr]="$1"
+                ctr=$(( $ctr + 1 ))
+            ;;
+        esac
+    done
+}
+
 declare -a infiles
-normalize_cc1_options () {
+# We run a normalizing pass on a cc1 command, to remove some awkward forms from it.
+# NOTE: normalizing cc1 options does not remove the nasty "-MD <argument>" form.
+#
+# What does it do?
+# It tries to enumerate input files, but is very imprecise at present.
+# It identifies the output file, pulling out "-o" and then re-adding it (pointlessly).
+#
+# The main purpose is to rewrite cases where a single cc1 invocation works, but
+# splitting into separate preprocessing and compilation invocations doesn't.
+# The main thing currently is to futz with options to avoid a breaking interaction
+# between -Werror, -D_FORTIFY_SOURCE and -Os.
+write_normalized_cc1_options_from_cc1_command () {
     prev_arg=""
     inctr=0
     ctr=0
-    saw_MD=""
-    mf_opt=""
-    mf_file=""
     outfile=""
     saw_E=""
     saw_Os=""
@@ -170,26 +155,12 @@ normalize_cc1_options () {
         debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
         not_infile=""
         case "$1" in
-            (-MD|-MMD)
-                # with cc1, -MD and -MMD always take an argument.
-                # with cpp, they never do.
-                # solve by removing -MD and translating to -MF
-                mf_opt="$1"
-                mf_file="$2"
-                saw_md="$1"
-                shift
-            ;; # don't keep matching
-            (-MF|-MMF)
-                mf_opt="$1"
-                mf_file="$2"
-                shift
-            ;; # don't keep matching
             (-o)
                 outfile="$2"
                 shift
-            ;; # don't keep matching
+            ;; # don't keep matching; we've shifted
             (-E) saw_E=1;
-                ;;& # then keep matching
+                ;;& # then keep matching... want to hit "-*" below
             (-Os) saw_Os=1
                 ;;& # then keep matching
             (-Werror) saw_Werror=1
@@ -214,7 +185,7 @@ normalize_cc1_options () {
                 # A useful regex for scraping the gcc man page for opts-with-args:
                 # -[-a-z0-9]+ [^-[:blank:]]
                 case "$prev_arg" in
-                    (-D|-U|-x|-aux-info|-dumpbase|-auxbase|-I|-i[a-z]*|-X*|-u|-T|--param|-G)
+                    (-D|-U|-x|-aux-info|-dumpbase|-auxbase|-I|-i[a-z]*|-X*|-u|-T|--param|-G|-MF|-MD|-MMD)
                     ;; # it's the opt's arg
                     (*)
                         # it may be an input file
@@ -236,24 +207,6 @@ normalize_cc1_options () {
         norm_cc1_options[$ctr]="-o"
         ctr=$(( $ctr + 1))
         norm_cc1_options[$ctr]="$outfile"
-        ctr=$(( $ctr + 1))
-    fi
-    # figure out -MD -MMD -MF -MMF
-    if [[ -n "$mf_opt" ]]; then
-        case "$saw_md" in
-            (-MMD)
-                norm_cc1_options[$ctr]="-MM"
-                ctr=$(( $ctr + 1 ))
-            ;;
-            (-MD)
-                norm_cc1_options[$ctr]="-M"
-                ctr=$(( $ctr + 1 ))
-            ;;
-            (*) ;;
-        esac
-        norm_cc1_options[$ctr]="$( echo "$mf_opt" | sed 's/D$/F/' )"
-        ctr=$(( $ctr + 1)) 
-        norm_cc1_options[$ctr]="$mf_file"
         ctr=$(( $ctr + 1))
     fi
     # if we saw -Os and -Werror and -D_FORTIFY_SOURCE, then we have a problem:
@@ -326,5 +279,5 @@ parse_as_command () {
     #"${as}" "${as_options[@]}" "$@"
 }
 
-# our "include guard": once WRAPPER is set, client scripts won't source us
+# our "include guard": once WRAPPER is set, well-behaved client scripts should refrain from sourcing us again
 WRAPPER="${WRAPPER:-$(dirname "$0")/../../wrapper/bin/wrapper}"

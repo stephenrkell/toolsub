@@ -6,10 +6,11 @@ WRAPPER="$0"
 . "${WRAPPER_FUNCS:-$(dirname "$0")/../../wrapper/lib/wrapper-funcs.sh}"
 
 my_cpp () {
+    debug_print 1 "my_cpp run with args: $@"
     cmd="$1"
     shift
     driver="$(guess_driver)"
-    echo "Running cilpp with args: "-driver" "$driver" $@" 1>&2
+    debug_print 1 "Running cilpp with args: "-driver" "$driver" $@"
     do_exec "$(dirname "$0")"/cilpp "-driver" "$driver" "$@"
 }
 CPPWRAP=my_cpp

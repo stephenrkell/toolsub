@@ -48,9 +48,7 @@ type cilpp_extra_arg = [
   | `ArgNamingPlugin
   ]
 
-let parseArgsAndRunCppDivertingToTempFile maybeSuffix =
-    let argList = Array.to_list Sys.argv in
-    let (argChunks, basicInfo) = scanAndChunkCppArgs argList in
+let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
     let saveTemps = ref false in
     let ppPluginsToLoadReverse = ref [] in
     let ppPassesToRunReverse = ref [] in
@@ -59,9 +57,11 @@ let parseArgsAndRunCppDivertingToTempFile maybeSuffix =
      * as the original arg list, but where adjacent options belong together,
      * the earlier ones appear as [] and the completed chunk appears as [arg1; arg2] or whatever.
      * As we go, we snarf various properties that interest us, and we
-     * gobble (replace with []) any arg that is private to us, i.e. that the real cpp doesn't grok. *)
-    let reChunkedArgs = List.mapi (fun i -> fun argList ->
-        match argList with
+     * gobble (replace with []) any arg that is private to us, i.e. that the real cpp doesn't grok.
+     * This is really the only crucial argument processing that we need to do here:
+     * pull out "-save-temps", "-plugin" and "-fpass-*". *)
+    let reChunkedArgs = List.mapi (fun i -> fun argChunk ->
+        match argChunk with
           | ["-save-temps"] -> saveTemps := true; [] (* i.e. accept -Wp,-save-temps; compiler doesn't grok it*)
           | ["-plugin"] -> (readingExtraArg := Some(`ArgNamingPlugin); [])
           | [s] when None <> matchesPrefix "-fpass-" s ->
@@ -72,7 +72,7 @@ let parseArgsAndRunCppDivertingToTempFile maybeSuffix =
             let wasReadingExtraArg = !readingExtraArg in
             readingExtraArg := None;
             match wasReadingExtraArg with
-                None -> argList (* i.e. no-op *)
+                None -> argChunk (* i.e. no-op *)
               | Some(`ArgNamingPlugin) -> ppPluginsToLoadReverse := arg :: !ppPluginsToLoadReverse; []
            )
           | _ -> ( (* This case matches non-singleton lists i.e. already-formed chunks *)
@@ -82,7 +82,7 @@ let parseArgsAndRunCppDivertingToTempFile maybeSuffix =
                 (* This means we are trying to form a chunk, given the preceding argument,
                  * but instead we saw something already chunked-up. Flag an error. *)
                 failwith ""
-                else argList
+                else argChunk
             )
     ) argChunks
     in
@@ -106,19 +106,28 @@ let parseArgsAndRunCppDivertingToTempFile maybeSuffix =
     let rewrittenArgs = List.flatten (List.mapi (fun i -> fun argChunk ->
         if i = 0 then [] (* we fill "cpp" or whatever from cppCommandPrefix *) else
         match argChunk with
-          | ["-o"; filename] -> ["-o"; newTempName]
+          | ["-o"; filename] ->  ["-o"; newTempName]
           | _ -> argChunk) reChunkedArgs)
       @ ( (* we might not have seen "-o" -- ensure there is a -o argument *)
       match basicInfo.minus_o_pos with
         None -> (* there was no -o, so add one *) [ "-o"; newTempName ]
       | _ -> [])
     in
-    runCommand "cpp" (cppCommandPrefix @ rewrittenArgs);
+    runCommand (* 'cpp' here is used only in error messages... *) "cpp" (cppCommandPrefix @ rewrittenArgs);
     (newTempName, basicInfo.output_file, !saveTemps, List.rev !ppPluginsToLoadReverse, List.rev !ppPassesToRunReverse)
 
 let () =
+    let argList = Array.to_list Sys.argv in
+    let (argChunks, basicInfo) = scanAndChunkCppArgs argList in
+    if basicInfo.suppress_ppout then
+        (* the command doesn't generate any preprocessed output, so we have nothing
+         * to do... just run the original command. This should arguably get filtered
+         * out in the wrapper scripts, so that cilpp does not have to handle it,
+         * i.e. an extension of just handling vanilla "cc -E" or "cpp" invocations. *)
+         runCommand "cpp" (* <-- only used in error messages *) argList
+    else
     let (newTempName, originalOutfile, saveTemps, ppPluginsToLoad, ppPassesToRun)
-     = parseArgsAndRunCppDivertingToTempFile (Some "i") in
+     = runCppDivertingToTempFile (Some "i") argChunks basicInfo in
     (* Okay, run CIL; we need the post-preprocessing line directive style *)
     Cil.lineDirectiveStyle := Some Cil.LinePreprocessorOutput;
     (* We have to use logical operators to avoid breaking code that does -Werror=format-string
