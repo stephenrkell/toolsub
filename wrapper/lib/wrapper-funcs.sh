@@ -18,9 +18,22 @@ debug_print () {
 # nasty HACK: examine the parent process's command line to guess the driver
 # This isn't *so* bad, because as a wrapper script we can be pretty sure that
 # we are caller directly by the driver.
+# HMM. Unless someone (like me) uses -### and then tries to run the commands
+# directly. Then it guesses our driver is 'bash', with hilarious results.
+# Why do we have to guess the driver? Because it's better than guessing just "cpp".
 guess_driver () {
     driver="$( ps -p $PPID -o comm= )"
-    debug_print 1 "driver binary is probably $driver" 1>&2
+    debug_print 1 "driver binary might be $driver" 1>&2
+    # What's a sanity check we can do on the parent process? For now just rule out the stupids...
+    case "$driver" in
+        (*sh)   
+            echo "Bailing rather than believing driver is $driver" 1>&2
+            exit 1
+        ;;
+        (*)
+            true
+        ;;
+    esac
     echo "$driver"
 }
 

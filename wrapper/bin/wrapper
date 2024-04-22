@@ -198,7 +198,9 @@ case "$cmd_to_run" in
                 # we've already written cpp_options, above
                 full_cpp_command+=("${cpp_options[@]}")
             elif [[ -n "$CPPWRAP" ]]; then
-                full_cpp_command=("${CPPWRAP}" "$(guess_driver)" "-E")
+                driver="$(guess_driver)"
+                if ! [[ $? -eq 0 ]]; then exit 1; fi
+                full_cpp_command=("${CPPWRAP}" "$driver" "-E")
                 write_cc_options_from_cc1_command "$@"
                 full_cpp_command+=("${cc_options[@]}")
             elif [[ -n "$CPP" ]]; then
@@ -209,8 +211,9 @@ case "$cmd_to_run" in
                 full_cpp_command+=("${cpp_options[@]}") # FIXME: need to skip first arg?
             else
                 # now if CPPWRAP is still not set, just use cpp
-                full_cpp_command=("$(guess_driver)" "-E")
-                # need a command, so create a dummy
+                driver="$(guess_driver)"
+                if ! [[ $? -eq 0 ]]; then exit 1; fi
+                full_cpp_command=("$driver" "-E")
                 write_cc_options_from_cc1_command "$@"
                 debug_print 1 "cc options: ${cc_options[@]}" 1>&2
                 full_cpp_command+=("${cc_options[@]}")

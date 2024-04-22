@@ -9,9 +9,15 @@ my_cpp () {
     debug_print 1 "my_cpp run with args: $@"
     cmd="$1"
     shift
-    driver="$(guess_driver)"
-    debug_print 1 "Running cilpp with args: "-driver" "$driver" $@"
-    do_exec "$(dirname "$0")"/cilpp "-driver" "$driver" "$@"
+    if [[ -n "$CPP" ]]; then
+        debug_print 1 "Running cilpp with args: "-realcpp" $CPP $@"
+        do_exec "$(dirname "$0")"/cilpp "-realcpp" $CPP "$@"
+    else
+        driver="$(guess_driver)"
+        if ! [[ $? -eq 0 ]]; then exit 1; fi
+        debug_print 1 "Running cilpp with args: "-driver" "$driver" $@"
+        do_exec "$(dirname "$0")"/cilpp "-driver" "$driver" "$@"
+    fi
 }
 CPPWRAP=my_cpp
 

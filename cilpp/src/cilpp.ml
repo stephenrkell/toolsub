@@ -38,6 +38,26 @@
 (* First we preprocess into a temporary file;
  * we pass through to cpp all our arguments except for any following "-o".
  * Then we run CIL and output to the intended -o file.
+ *
+ * FIXME: we have an identity crisis. Do we emulate 'cpp' or 'cc -E'?
+ * Although the former sounds right, we are already forced to use the latter
+ * in some cases, because we may not know which 'cpp' command to run, but
+ * we can usually figure out the driver (albeit from parent-PID hackery
+ * or from an explicit -driver option).
+ * Even GNU 'make' defaults CPP to 'cc -E'.
+ *
+ * This matters because '-MD' has different semantics between 'cpp' and
+ * 'cc -E' (separately from how it has even more-different semantics in 'cc1').
+ * HMM, or does it?
+ *
+ * The most appealing situation is where we emulate only a common subset
+ * of 'cc -E' and 'cpp'. Using 'wrapper' we could arrange this. The idea is
+ * to centralise understanding of command-line options in 'wrapper', not in
+ * this tool. For example, we could require that '-o', '-E' and '-fpass-*'
+ * appear before other options. Without this kind of assumption, we have to
+ * understand the whole command line e.g. to avoid getting confused by
+ * perversities like "-MF -o" where an earlier option's argument looks like
+ * an option. There are already cases like "-D _FORTIFY_SOURCE"
  *)
 open Compiler_args
 open Unix
@@ -46,12 +66,14 @@ open Feature
 type cilpp_extra_arg = [
     basic_extra_arg
   | `ArgNamingPlugin
+  | `ArgNamingRealCPP
   ]
 
 let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
     let saveTemps = ref false in
     let ppPluginsToLoadReverse = ref [] in
     let ppPassesToRunReverse = ref [] in
+    let realCpp = ref None in
     let readingExtraArg = ref None in
     (* chunkedArgs is a list with exactly the same number of entries
      * as the original arg list, but where adjacent options belong together,
@@ -63,6 +85,7 @@ let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
     let reChunkedArgs = List.mapi (fun i -> fun argChunk ->
         match argChunk with
           | ["-save-temps"] -> saveTemps := true; [] (* i.e. accept -Wp,-save-temps; compiler doesn't grok it*)
+          | ["-realcpp"] -> (readingExtraArg := Some(`ArgNamingRealCPP); [])
           | ["-plugin"] -> (readingExtraArg := Some(`ArgNamingPlugin); [])
           | [s] when None <> matchesPrefix "-fpass-" s ->
                 let passName = really (matchesPrefix "-fpass-" s) in
@@ -74,6 +97,7 @@ let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
             match wasReadingExtraArg with
                 None -> argChunk (* i.e. no-op *)
               | Some(`ArgNamingPlugin) -> ppPluginsToLoadReverse := arg :: !ppPluginsToLoadReverse; []
+              | Some(`ArgNamingRealCPP) -> realCpp := Some(arg); []
            )
           | _ -> ( (* This case matches non-singleton lists i.e. already-formed chunks *)
             let wasReadingExtraArg = !readingExtraArg in
@@ -93,7 +117,7 @@ let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
      * testing for driver names is really gross. Can we really not find
      * the input filename? Or at least make a guess and use it instead
      * of hardcoded "c" below? *)
-    let cppCommandPrefix, guessedLang = guessCppCommandAndLang basicInfo in
+    let cppCommandPrefix, guessedLang = guessCppCommandAndLang basicInfo !realCpp in
     let suffixOfLang l = match l with
         "c++" -> "ii"
       | "c" -> "i" (* FIXME: other languages are possible *)
@@ -176,5 +200,7 @@ let () =
     in
     let _ = Cil.dumpFile Cil.defaultCilPrinter chan str currentCilFile
     in
+    let status = if !Errormsg.hadErrors then 1 else 0 in
     (* delete temporary file unless -save-temps *)
-    if saveTemps then () else Unix.unlink newTempName
+    (if saveTemps then () else Unix.unlink newTempName;
+    exit status)

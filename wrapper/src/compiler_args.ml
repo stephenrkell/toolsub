@@ -77,7 +77,7 @@ type basic_arg_info = {
  * the driver to set explicitly the dependency output filename. And since the
  * "-o means dependency file" semantics doesn't seem to happen, I think we are OK.
  *)
-let guessCppCommandAndLang (info : basic_arg_info) : (string list) * string =
+let guessCppCommandAndLang (info : basic_arg_info) (realCpp : string option) : (string list) * string =
   let langOfStd std =
       if info.input_language <> None then really info.input_language
       else if None <> matchesPrefix "c++" std || None <> matchesPrefix "gnu++" std
@@ -109,13 +109,22 @@ let guessCppCommandAndLang (info : basic_arg_info) : (string list) * string =
     * before we get to here: if we're 'cpp' it's when we see '-M' or '-MM'. cilpp now
     * does this, but perhaps it should be in the wrapper scripts. *)
   in
-  match info.driver with
-    None -> (match info.language_std with
-        None -> failwith "can't run the right cpp without -std=xxx option or a -driver"
-      | Some(std) -> "cpp" :: depsArgs, langOfStd (really info.language_std) (* -std= should do the trick *)
-    )
-  | Some(d) ->
-        d :: "-E" :: depsArgs, langOfDriver d (* This -E may be redundant, but leave it for good measure *)
+  let lang = match info.language_std with
+        None -> (match info.driver with
+                None -> "c"
+              | Some(drv) -> langOfDriver drv (* defaults to "c" *)
+                )
+      | Some(std) -> langOfStd std
+  in
+  match realCpp with
+      Some(real) -> real :: depsArgs, lang
+    | None -> (match info.driver with
+            None -> (if None = info.language_std then failwith "can't run the right cpp without -std=xxx option or a -realcpp or a -driver"
+                     else "cpp" :: depsArgs, langOfStd (really info.language_std) (* -std= should do the trick *)
+                    )
+          | Some(d) ->
+                d :: "-E" :: depsArgs, langOfDriver d (* This -E may be redundant, but leave it for good measure *)
+      )
 
 
 (* chunkedArgs is a list with exactly the same number of entries
