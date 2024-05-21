@@ -21,10 +21,10 @@
 # The "original command" can itself be substituted, by setting:
 #
 # CPP
-# CC          (FIXME: not implemented)s
+# CC          (FIXME: not implemented)
 # CC1         (FIXME: not implemented, so eliminate)
 # AS          (FIXME: implement)
-# COLLECT2    (FIXME: implement)
+# COLLECT2    (FIXME: implement... probably call it LD)
 #
 # These variables denote replacement commands; they do not receive a further
 # command as their first argument.
@@ -38,6 +38,23 @@
 # command is set, then the build should proceed unchanged. Internally, the script will
 # be turning 'cc1' invocations back into top-level driver invocations that do a single
 # thing at a time, e.g. just preprocess or just compile to assembly, etc.
+# In other words, the default for CPP, CC, AS and COLLECT2 (should be LD?)
+# is the driver with the relevant single-tool options
+#
+#   ABOUT collect2: it is used to implement global initialization and destruction
+#   in the GNU toolchain, without assuming a loader that supports such features
+#   natively. I think any statically linked environment might not?
+#   It pulls in __main from libgcc and ensures it has a table of constructors
+#   to run. On ELF platforms under static linking, do .ctors and .dtors and .init and .fini
+#   and .init_array and .fini_array take effect in the loader? Or is this mechanism
+#   i.e. explicit startup code for doing so, needed?
+#   Since there is no .dynamic section mandated and no section headers need be present either,
+#   I guess it is needed?
+#
+# SANITY CHECK: how can we use the above to run, say, cilpp -real-cpp '$driver -E' -plugin foo.cmx -fpass-foo ?
+# I think so. Run the wrapper with CPP="cilpp -real-cpp \"$CC_DRIVER -E\""
+# and the wrapper will set CC_DRIVER as needed. FIXME: who transforms -Wp,BLAH ?
+# Also need to provide the stronger property about arg order as documented in cilpp.ml.
 #
 # Note that in GCC, -no-integrated-cpp no longer does the obvious: even
 # if run with -no-integrated-cpp, gcc will not run `cpp' ever... it
@@ -61,7 +78,83 @@ case "$0" in
         # we don't interfere with linking, so no extra ldflags
         exit 0
     ;;
-    (*) # silently continue, i.e. actually act as the wrapper command
+    (*wrapper) # silently continue, i.e. actually act as a "-wrapper wrapper" command
+        # FIXME: scrape the driver right here?
+    ;;
+    (*wrap) # assume the next argument is a driver command, and use -### to interrogate it,
+            # i.e. act as a "ccwrap" commad in "ccwrap cc ..." ...
+        driver="$1"
+        declare -A real_args
+        ctr=0
+        just_output=0
+        while shift; do
+            real_args[$ctr]="$1"
+            case "$1" in
+                ('-###') just_output=1 ;;
+                (*) ;;
+            esac
+            ctr=$(( $ctr + 1 ))
+        done
+        # Now we need to implement "-wrapper" ourselves, in effect, given a driver $driver
+        # that does not support "-wrapper" but does support "-###".
+        # What we do next depends on whether "-###" appears in the command already.
+        # If it does, we output the command we *would* run.
+        # If it doesn't, we actually run them.
+        # FIXME: for now, don't support this. Just run them.
+        output_stderr="$( "$driver" -\#\#\# "${real_args[@]}" 2>&1 1>&2 )"
+        status=$?
+        # Every legit command should begin with a space and contain a double quote
+        cmdline_filter='^ .*"'
+        echo "Got -### output: $output_stderr" 1>&2
+        # Did our command actually trigger the "-###" behaviour?
+        # If so, we should get at least one line matching "$cmdline_filter"
+        # and also a 'Target:' and a 'Thread model:' line. If we don't get these,
+        # we assume the compiler did nothing but print some informative output, so
+        # we echo that and repeat its return status.
+        { grep "$cmdline_filter" <<<"$output_stderr" >/dev/null && \
+           grep "^Target:" <<<"$output_stderr" >/dev/null && \
+           grep "^Thread model:" <<<"$output_stderr" >/dev/null; } || \
+           { echo "Wrapper-degenerated $0" 1>&2; echo "$output_stderr" 1>&2; exit $status; }
+        # FIXME: what if we got that output because the -### was already in the command line?
+        # Then we still need to wrap -- we need to output the wrapped command.
+        # What's our "wrapper" self? Look for an alias of ourselves, in the
+        # containing directory, whose name matches "*wrapper"
+        our_realpath="$(readlink -f "$0")" #"
+        ourselves_as_wrapper="$( ls "$(dirname "$our_realpath")"/*wrapper | while read cand; do
+            if [[ "$(realpath "$cand")" == "$our_realpath" ]]; then
+                echo "$cand"; break
+            fi
+        done )"
+        if [[ -z "$ourselves_as_wrapper" ]]; then
+            echo "Could not identify wrapper alias for $0" 1>&2
+            exit 1
+        else
+            echo "Identified ourselves as wrapper: $ourselves_as_wrapper" 1>&2
+        fi
+        while read cmdline; do
+            if [[ $just_output -eq 1 ]]; then
+                echo "$ourselves_as_wrapper" $cmdline 1>&2
+                status=0
+            else
+                echo "REALLY DOING: " "$ourselves_as_wrapper" $cmdline 1>&2
+                # NEXT PROBLEM: running 'wrapper' here will cause it to guess
+                # the driver incorrectly. It will guess it as *us*, and re-invoke us...
+                # but as 'wrapper', so... hmm. What will *that* guess as the driver?
+                # Why, us as 'wrapcc'. So we can make the driver-guessing code
+                # use ppid->$1 if ppid->$0 looks like a driver-wrapper, or ppid->$0
+                # if it looks like a driver. How does it tell the difference? See there.
+                #
+                # Maybe we just want it to give up on
+                # guessing the driver? Since we *know* the driver. Maybe pass it
+                # '-driver' explicitly? Feels off. Nicer to use an environment variable?
+                export CC_DRIVER="$driver"
+                # ... not sure! Maybe -driver is better.
+                status=$?
+            fi
+            if ! [[ $status -eq 0 ]]; then exit $status; fi
+        done <<<"$( echo "$output_stderr" | grep "$cmdline_filter" )"
+    ;;
+    (*) # we're being run as another command -- just being sourced?
     ;;
 esac
 
@@ -114,9 +207,11 @@ cc1_command_is_pp () {
 # cc1/cc1plus command, we'd rather wrap the well-documented "cpp"
 # command. So we transform a preprocessing cc1/cc1plus call's args into
 # args that work for a cpp call.
+# FIXME: needs update: we sometimes rewrite to "$driver -E" not "cpp",
+# and maybe that's better.
 cmd_to_run="$1"
-debug_print 1 "`basename "$cmd_to_run"`-wrapping ($cmd_to_run): $@" 1>&2
 debug_print 1 "cmd_to_run is $cmd_to_run" 1>&2
+debug_print 1 "`basename "$cmd_to_run"`-wrapping ($cmd_to_run): $@" 1>&2
 case "$cmd_to_run" in
     (*/cc1|*/cc1plus)
         ctr=0
@@ -182,6 +277,7 @@ case "$cmd_to_run" in
             #
             #, a cpp-like
             # command line can be assumed by CPPWRAP program.
+            #
             # The same "driver" trick is replicated in cilpp's OCaml code, but we pass
             # it the driver as a special "-driver" option, to save it from scraping the
             # parent pid. If a -std=xxx option is given explicitly, this is redundant.
@@ -225,7 +321,7 @@ case "$cmd_to_run" in
     (as|*/as)
         debug_print 1 "command is $@" 1>&2
         orig_as="$1"
-        parse_as_command "$@"
+        parse_assembler_command "$@"
         shift
         # if ASWRAP is set, use ${ASWRAP} $1
         ASWRAP="${ASWRAP:+${ASWRAP} ${orig_as}}"

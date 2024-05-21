@@ -21,10 +21,16 @@ debug_print () {
 # HMM. Unless someone (like me) uses -### and then tries to run the commands
 # directly. Then it guesses our driver is 'bash', with hilarious results.
 # Why do we have to guess the driver? Because it's better than guessing just "cpp".
+# In fact 'wrapper' really rewrites the wrapped command into a driver invocation,
+# just an "elementary" driver invocation that is only doing one thing.
 guess_driver () {
     driver="$( ps -p $PPID -o comm= )"
     debug_print 1 "driver binary might be $driver" 1>&2
     # What's a sanity check we can do on the parent process? For now just rule out the stupids...
+    # another approach might be to look at the whole parent command line and
+    # test whether it's a plausible compiler command, and insist on CC_DRIVER if
+    # we don't think it is plausible.
+    # One test would be whether it has "-wrapper" in it!
     case "$driver" in
         (*sh)   
             echo "Bailing rather than believing driver is $driver" 1>&2
@@ -244,7 +250,7 @@ write_normalized_cc1_options_from_cc1_command () {
 }
 
 # utility for as-wrappers
-parse_as_command () {
+parse_assembler_command () {
     debug_print 1 "My as: $@" 1>&2
     as="$1"
     shift

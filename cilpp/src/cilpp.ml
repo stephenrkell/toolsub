@@ -44,20 +44,79 @@
  * in some cases, because we may not know which 'cpp' command to run, but
  * we can usually figure out the driver (albeit from parent-PID hackery
  * or from an explicit -driver option).
- * Even GNU 'make' defaults CPP to 'cc -E'.
+ * Even GNU 'make' defaults CPP to '$(CC) -E'. But why does this affect us?
+ * In 'wrapper' we fall back on calling '$(CC) -E' in two cases:
+ * - if we have CPPWRAP set but no CPP set (we do: {CPPWRAP} $driver -E); or
+ * - if we have neither CPPWRAP nor CPP set (we do: $driver -E)
+ * It seems that wrappers would rather assume they have a "cc" command than a "cpp"
+ * command. But why?
  *
- * This matters because '-MD' has different semantics between 'cpp' and
- * 'cc -E' (separately from how it has even more-different semantics in 'cc1').
- * HMM, or does it?
+ * It's because we would not know which "cpp" command to delegate to.
+ * By contrast, we can often guess the driver ("cc"-alike) and use that.
+ * Once we have that, we know "$driver -E" is available.
+ * However, guessing the driver is always a hack too (using parent PID).
  *
- * The most appealing situation is where we emulate only a common subset
+ * Can we "do both"? Not really; we have to pick a thing to run and run it.
+ * We could however perhaps assume that the caller tells us.
+ *
+ * Perhaps we could emulate only a common subset
  * of 'cc -E' and 'cpp'. Using 'wrapper' we could arrange this. The idea is
  * to centralise understanding of command-line options in 'wrapper', not in
  * this tool. For example, we could require that '-o', '-E' and '-fpass-*'
- * appear before other options. Without this kind of assumption, we have to
- * understand the whole command line e.g. to avoid getting confused by
+ * appear "first" (f.s.v.o.) before other options. Without this kind of assumption,
+ * we have to understand the whole command line e.g. to avoid getting confused by
  * perversities like "-MF -o" where an earlier option's argument looks like
- * an option. There are already cases like "-D _FORTIFY_SOURCE"
+ * an option. There are already cases like "-D _FORTIFY_SOURCE".
+ *
+ * Does this assumption even work? What if the caller doesn't intend to pass
+ * one of our options at all, but does use it as the argument to another option?
+ * Then we will still be scanning rightwards for it and will mistakenly see it.
+ * UNLESS we stop scanning at the first option we don't understand. That should
+ * be enough: the options we don't understand will include the option to which the
+ * ringer/decoy optionlike string is an argument.
+ *
+ * Perhaps we should not pass the driver but the "real" command? That could
+ * be "cpp" or "$driver -E" or anything else. We'd need to take a string
+ * assumed to be IFS-separated command-line words.
+ *
+ * OK, so this might work:
+ * - accept a '-realcpp <string>' argument     instead of -driver
+ * - the wrapper scripts will always use "$driver -E" as the realcpp, but we don't care
+ * - we require that "-o" comes early
+ *   what about -MD? tricky one... see below
+ * - what other options are we sensitive to? well, "-std=" and "-x lang" -- we use
+ *    these to guess the right suffix for a temporary file. Can we not simply use
+ *    the suffix of the actual -o output file name? YES. ELIMINATE the fancy lang stuff.
+ * - and then there's -plugin and -fpass-*
+ *    ... SO WHAT? I think our wrapper can detect these with -Wp, and guarantee to
+ *    place them first.
+ *    So we need from our wrapper the 
+ *
+ * One test case: '-MD' has different semantics between 'cpp' and
+ * 'cc -E' (separately from how it has even more-different semantics in 'cc1').
+ * Does it really differ between 'cpp' and 'cc -E' in a way that
+ * affects us? What do we need to do with "-MD"? With "cpp" it lacks a
+ * filename argument but generates one, and requests that we output dependency information
+ * there in addition to outputting the real output wherever it would ordinarily go.
+ * Or one may use -M -MF to set the depfile name, but that suppresses preprocessing.
+ * I THINK one may use "-MD -MF" and still get both kinds of output. YES, verified.
+ * Can one use -MF with 'cpp'? Yes. If -M -MF <file> is used, the output of
+ * preprocessing is suppressed. But if -MD -MF <file> is used, both are output.
+ *
+ * Our question is: can we be opaque to all this, i.e. just pass those options along
+ * and not care? If our subprocess generates no output
+ * I think the case we would care about is where "-o" is no longer naming a cpp output
+ * file but rather something else that is non-empty. It can be a file that receives no
+ * output (if -M -MF <file> is used) but that would be OK: our plugin runs on no output
+ * and generates an empty output itself. I don't *think* "-o" can be modified into naming
+ * a depfile with cpp, unlike with the driver. So it's our caller's problem! If you're
+ * passing a driver as -realcpp, don't pass "-M -MF", because you'll generate non-cpp-output
+ * output to the .o file, and that's not a cpp command that we wrap. Oh, but what should you do?
+ * Rewrite it to -M -MF <file> instead, I think, and choose <file> according to the cc (NOT cpp)
+ * man page's rules. (and NOT -MD -MF file, since that will generate cpp output additionally.)
+ * So the short summary is that we can ignore '-MD' but wrappers should beware:
+ * -M -MF is not a real cpp command (even if we add -MD to those, in either order w.r.t. -M,
+ * output is still suppressed).
  *)
 open Compiler_args
 open Unix

@@ -77,7 +77,8 @@ TODO:
 - test cases
     - how to test 'wrapper'? one big test is that it can compile a large codebase
 - heed only *WRAP options; eliminate CPP
-- renamings: CC1WRAP => CCWRAP (and rewrite options to driver form), CPPWRAP can stay as-is? (precedent: GNU Make defaults $(CPP) to 'cc -E')
+- renamings: CC1WRAP => CCWRAP (and rewrite options to driver form);
+             CPPWRAP can stay as-is? (precedent: GNU Make defaults $(CPP) to 'cc -E')
 - completely eliminate 'cpp' handling? what if we really do want to fake the preprocessor, e.g. in a build system that runs 'cpp'?
 - compiler_args.ml:
    - firstly, make it correct w.r.t. whether it's processing cpp or driver command lines
