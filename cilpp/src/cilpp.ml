@@ -55,10 +55,8 @@
  * By contrast, we can often guess the driver ("cc"-alike) and use that.
  * Once we have that, we know "$driver -E" is available.
  * However, guessing the driver is always a hack too (using parent PID).
- *
  * Can we "do both"? Not really; we have to pick a thing to run and run it.
  * We could however perhaps assume that the caller tells us.
- *
  * Perhaps we could emulate only a common subset
  * of 'cc -E' and 'cpp'. Using 'wrapper' we could arrange this. The idea is
  * to centralise understanding of command-line options in 'wrapper', not in
@@ -80,37 +78,35 @@
  * assumed to be IFS-separated command-line words.
  *
  * OK, so this might work:
- * - accept a '-realcpp <string>' argument     instead of -driver
- * - the wrapper scripts will always use "$driver -E" as the realcpp, but we don't care
+ * - accept a '-real-cpp <string>' argument     instead of -driver
+ * - the wrapper scripts will always use "$driver -E" as the -real-cpp, but we don't care
  * - we require that "-o" comes early
  *   what about -MD? tricky one... see below
  * - what other options are we sensitive to? well, "-std=" and "-x lang" -- we use
  *    these to guess the right suffix for a temporary file. Can we not simply use
  *    the suffix of the actual -o output file name? YES. ELIMINATE the fancy lang stuff.
  * - and then there's -plugin and -fpass-*
- *    ... SO WHAT? I think our wrapper can detect these with -Wp, and guarantee to
+ *    ... I think our wrapper can detect these with -Wp, and guarantee to
  *    place them first.
- *    So we need from our wrapper the 
  *
  * One test case: '-MD' has different semantics between 'cpp' and
  * 'cc -E' (separately from how it has even more-different semantics in 'cc1').
- * Does it really differ between 'cpp' and 'cc -E' in a way that
- * affects us? What do we need to do with "-MD"? With "cpp" it lacks a
+ * Does it really differ between 'cpp' and 'cc -E' in a way that affects us?
+ * Short answer: no. Long answer: what do we need to do with "-MD"? With "cpp" it lacks a
  * filename argument but generates one, and requests that we output dependency information
  * there in addition to outputting the real output wherever it would ordinarily go.
  * Or one may use -M -MF to set the depfile name, but that suppresses preprocessing.
  * I THINK one may use "-MD -MF" and still get both kinds of output. YES, verified.
  * Can one use -MF with 'cpp'? Yes. If -M -MF <file> is used, the output of
- * preprocessing is suppressed. But if -MD -MF <file> is used, both are output.
- *
+ * preprocessing is suppressed. But if -MD -MF <file> is used, both are output. *
  * Our question is: can we be opaque to all this, i.e. just pass those options along
- * and not care? If our subprocess generates no output
+ * and not care? If our subprocess generates no output then it's probably OK.
  * I think the case we would care about is where "-o" is no longer naming a cpp output
  * file but rather something else that is non-empty. It can be a file that receives no
  * output (if -M -MF <file> is used) but that would be OK: our plugin runs on no output
  * and generates an empty output itself. I don't *think* "-o" can be modified into naming
  * a depfile with cpp, unlike with the driver. So it's our caller's problem! If you're
- * passing a driver as -realcpp, don't pass "-M -MF", because you'll generate non-cpp-output
+ * passing a driver as -real-cpp, don't pass "-M -MF", because you'll generate non-cpp-output
  * output to the .o file, and that's not a cpp command that we wrap. Oh, but what should you do?
  * Rewrite it to -M -MF <file> instead, I think, and choose <file> according to the cc (NOT cpp)
  * man page's rules. (and NOT -MD -MF file, since that will generate cpp output additionally.)
@@ -144,7 +140,7 @@ let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
     let reChunkedArgs = List.mapi (fun i -> fun argChunk ->
         match argChunk with
           | ["-save-temps"] -> saveTemps := true; [] (* i.e. accept -Wp,-save-temps; compiler doesn't grok it*)
-          | ["-realcpp"] -> (readingExtraArg := Some(`ArgNamingRealCPP); [])
+          | ["-real-cpp"] -> (readingExtraArg := Some(`ArgNamingRealCPP); [])
           | ["-plugin"] -> (readingExtraArg := Some(`ArgNamingPlugin); [])
           | [s] when None <> matchesPrefix "-fpass-" s ->
                 let passName = really (matchesPrefix "-fpass-" s) in
