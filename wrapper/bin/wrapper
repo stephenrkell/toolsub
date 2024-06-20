@@ -295,8 +295,9 @@ clang_optlines () {
     local clang="$1"
     # FIXME: haven't inspected this very carefully
     # but it seems to do the right thing
-    LANG=C ${clang:-clang} --help | select_option_doclines | label_joined_args | \
+    { LANG=C ${clang:-clang} --help; LANG=C ${clang:-clang} -cc1 --help; } | select_option_doclines | label_joined_args | \
          label_separate_args | drop_descriptions
+    echo "-cc1"
 }
 # Now are we ready to tackle scanning the command lines? Almost.
 # Generate the shell code we need. We will paste it.
@@ -309,27 +310,123 @@ optlines_to_caselines () {
              /.*/          {s//(&)   canonopt="&"; inc=1 ;;/;p;d}'
 }
 
+# Here is how we scan a command line. The case-splitting of command options
+# happens in a separate function passed as an argument. The output goes into
+# various variables that are written by this function... for *_args (array) and
+# *_argcount, the '*' part is passed as the second argument.
 scan_generic () {
     local casefunc="$1"
     local var_prefix="$2"
-    shift; shift
-    
+    local cmd="$3"
+    issued_helpmsg=0
+    shift; shift; shift
     # How can we share the logic that wraps around what is generated?
-    # - the case stmt is its own function
+    # - the case stmt is its own function (name taken as an argument)
     # - inc is initially 0
-    # - a separate case split in the caller handles -, -*, *
-
-}
-# Now let's do a scanner. NOTE: currently we don't use this driver scanner.
-scan_gcc_driver () {
-    local gcc="$1"
-    shift
-    driver_argcount=0
+    # - a separate case split in the caller handles -, -*, * -- detected by inc == 0
+    eval ${var_prefix}_argcount=0
+    declare -n argcount=${var_prefix}_argcount
     realposn=1
     while true; do
-        canonopt=""; inc=1; optarg=""
-        driver_args[$driver_argcount]="$1"; driver_argcount=$(( $driver_argcount + 1 ))
-        case "$1" in
+        debug_print 2 "Scanning: \`$1'" 1>&2
+        canonopt=""; inc=0; optarg=""
+        # we store args at position 1 onwards
+        eval debug_print 2  "${var_prefix}_args"'[$((${argcount}+1))]="$1"' 1>&2
+        eval "${var_prefix}_args"'[$((${argcount}+1))]="$1"'
+        $casefunc "$@"  # will set 'inc' and 'canonopt' for any option it handles, and maybe 'optarg'
+        if [[ $inc -eq 0 ]]; then debug_print 2 "Input file or option? \`$1'" 1>&2; case "$1" in
+            (-) # stdin/stdout
+                # this is a filename -- do something with it
+                input_files_by_argposn[$realposn]="$1"
+            ;;
+            (-*)    # unrecognised option
+                echo "WARNING: unrecognised optionlike argument $1; assuming argumentless" 1>&2
+                if [[ $issued_helpmsg -eq 0 ]]; then
+                    echo "Try: diff -u <( sed -n \$'/# BEGIN GENERATED FROM ${var_prefix}_optlines/,\$ p\\n/# END GENERATED FROM ${var_prefix}_optlines/ q' "$0" ) <( . $0 && ${var_prefix}_optlines ${cmd} | optlines_to_caselines )"
+                    issued_helpmsg=1
+                fi
+                # what to do? assume it's an option with no argument
+                canonopt="$1"; inc=1
+                ;;
+            ('')
+                echo "BUG?: empty filename" 1>&2
+                exit 1  # FIXME: detect empty filenames coming in, and don't BUG on those
+                ;;
+            (*)
+                # this is a filename -- do something with it
+                input_files_by_argposn[$realposn]="$1"
+                inc=1
+            ;;
+            esac
+        fi
+        if [[ $inc == 0 ]]; then
+            echo "BUG: forgot to increment realpos" 1>&2
+        fi
+
+        # We just got "canonopt" and "optarg" -- do something with them.
+        # We are keeping:
+        # input_files_by_argposn  sparse array, one entry for each arg that is an input file
+        # canonopts_by_argposn    sparse array, one entry for each arg that is an option
+        # inc_by_argposn          sparse array, one entry for whenever there is an 'inc' > 1
+        # optposns_by_opt         associative array, one entry (space-sep list of indices) per canonopt seen
+        # optargposns_by_opt      associative array, one entry (space-sep list of indices) per optarg seen
+        #    ^-- is this really useful? for a JARG it gives us the whole opt, not the isolated optarg
+        #    Maybe we should just use the inc and keep optargs_by_argposn? YES
+        # optargs_by_argposn      sparse array, one entry (the optarg) for each arg that embodies an optarg
+        # incs_by_argposn         how many to increment argpos by to get to the next input file or opt
+        # REMEMBER: be consistent about "posn" versus "pos"
+        # We need to remember 'increments' on a per-argposn basis.
+        # We extend this to capture the optarg also.
+        # At any position, there may be an optarg... e.g. for -foo=bar, "bar" is at
+        # whatever position "-foo" is at, but for "-foo bar", "bar" is at the next position.
+        if [[ $inc -gt 1 ]]; then incs_by_argposn[$realposn]="$inc"; fi
+        if [[ -n "$canonopt" ]]; then
+            debug_print 2 "At realposn $realposn got canonopt $canonopt and optarg $optarg" 1>&2
+            canonopts_by_argposn[$realposn]="$canonopt"
+            existing_optposns_for_this_opt="${optposns_by_opt["$canonopt"]}"
+            optposns_by_opt["$canonopt"]="${existing_optposns_for_this_opt:+${existing_optposns_for_this_opt} }$realposn"
+            if [[ -n "$optarg" ]]; then
+                # # remember arguments as a list of positions -- yes it's indirect but
+                # # args may have spaces in them, which would mess up a space-separated list
+                # existing_argposns_for_this_opt="${optargposns_by_opt["$canonopt"]}"
+                # optargposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} }$realposn"
+
+                # We have an arg and a canonopt, but since some optargs are JARGS,
+                # the optarg may or may not be isolated in the argument list;
+                # If it is, it is at the next argposn and inc is 2. Otherwise it is
+                # jammed into the string at the current argposn and inc is 1.
+                # (One day we may want to capture multiple args, in forms like
+                # -foptimize-blah=foo, where both "blah" and "foo" are arguments.
+                # That will make all the above 'case' statment more interesting but
+                # it should still basically fit the model.
+                optargs_by_argposn[$(( $realposn + $inc - 1))]="$optarg"
+                # Also remember arguments as a list of positions -- yes it's indirect but
+                # args may have spaces in them, which would mess up a space-separated list
+                existing_argposns_for_this_opt="${optargposns_by_opt["$canonopt"]}"
+                optargposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} }$realposn"
+            fi
+        fi
+        # snarf the unmodified arg and increment realpos
+        debug_print 2 "inc'ing by $inc" 1>&2
+        for n in `seq 1 $inc`; do
+        # For "shift": "The return status is greater than zero if n is greater than $#
+        # or less than zero; otherwise 0."
+        # So if we have only "$1" and we do 'shift', it will succeed but we will have
+        # nothing in $1 any more.
+             eval "${var_prefix}_args"'[$realposn]="$1"'
+             shift
+             realposn=$(( $realposn + 1 ))
+             argcount=$(( $argcount + 1 ))
+             if [[ $# -eq 0 ]]; then
+                debug_print 2 "argcount is finally $argcount" 1>&2
+                return
+            fi
+        done
+    done
+}
+
+gcc_driver_optcases () {
+case "$1" in
 # BEGIN GENERATED FROM gcc_driver_optlines | optlines_to_caselines
 (-x)  canonopt="-x"; optarg="$2"; inc=2;;
 (-v)   canonopt="-v"; inc=1 ;;
@@ -374,46 +471,33 @@ scan_gcc_driver () {
 (--help)   canonopt="--help"; inc=1 ;;
 (-###)   canonopt="-###"; inc=1 ;;
 # END GENERATED FROM gcc_driver_optlines | optlines_to_caselines
-        (-) # stdin/stdout
-            # this is a filename -- do something with it
-            input_files_by_argposn[$realposn]="$1"
-        ;;
-        (-*)    # unrecognised option
-            echo "WARNING: unrecognised optionlike argument $1; assuming argumentless" 1>&2
-            echo "Try: diff -u <( sed -n \$'/# BEGIN GENERATED FROM gcc_driver_optlines/,\$ p\\n/# END GENERATED FROM gcc_driver_optlines/ q' ) <( . $0 && gcc_driver_optlines ${gcc:-gcc} | optlines_to_caselines )"
-            # what to do? assume it's an option with no argument
-            canonopt="$1"; inc=1
-            ;;
-        (*)
-            # this is a filename -- do something with it
-            input_files_by_argposn[$realposn]="$1"
-        ;;
-    esac
-    # We just got "canonopt" and "optarg" -- do something with them
-    if [[ -n "$canonopt" ]]; then
-        existing_optposns_for_this_opt="${optposns_by_opt["$canonopt"]}"
-        optposns_by_opt["$canonopt"]="${existing_optposns_for_this_opt:+${existing_optposns_for_this_opt} }$realposn"
-        if [[ -n "$optarg" ]]; then
-            # remember arguments as a list of positions -- yes it's indirect but
-            # args may have spaces in them, which would mess up a space-separated list
-            existing_argposns_for_this_opt="${argposns_by_opt["$canonopt"]}"
-            argposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} }$realposn"
-        fi
-    fi
-
-    # increment realpos
-    for n in `seq 1 $inc`; do { { shift && realposn=$(( $realposn + 1 )); } || return; }; done
-    done
+esac
 }
+# Now let's do a scanner. NOTE: currently we don't use this driver scanner.
+scan_gcc_driver () {
+    local gcc="$1"
+    shift
+    scan_generic gcc_driver_optcases gcc_driver "${gcc:-gcc}" "$@"
+}
+#    # leave this here for now
+#    gcc_driver_argcount=0
+#    realposn=1
+#    while true; do
+#        canonopt=""; inc=1; optarg=""
+#        gcc_driver_args[$gcc_driver_argcount]="$1"; gcc_driver_argcount=$(( $gcc_driver_argcount + 1 ))
+#        case "$1" in
 
 scan_gcc_cc1 () {
     local cc1="$1"
     shift
-    cc1_argcount=0
-    realposn=1
-    while true; do
-        canonopt=""; inc=1; optarg=""
-        case "$1" in
+    scan_generic gcc_cc1_optcases gcc_cc1 "${cc1:-cc1}" "$@"
+}
+gcc_cc1_optcases () {
+#    gcc_cc1_argcount=0
+#    realposn=1
+#    while true; do
+#        canonopt=""; inc=1; optarg=""
+case "$1" in
 # BEGIN GENERATED FROM gcc_cc1_optlines | optlines_to_caselines
 (-x)  canonopt="-x"; optarg="$2"; inc=2;;
 (-w)   canonopt="-w"; inc=1 ;;
@@ -1952,75 +2036,1379 @@ scan_gcc_cc1 () {
 (--ansi)   canonopt="--ansi"; inc=1 ;;
 (--all-warnings)   canonopt="--all-warnings"; inc=1 ;;
 # END GENERATED FROM gcc_cc1_optlines | optlines_to_caselines
-        (-) # stdin/stdout
-            # this is a filename -- do something with it
-            input_files_by_argposn[$realposn]="$1"
-        ;;
-        (-*)    # unrecognised option
-            echo "WARNING: unrecognised optionlike argument $1; assuming argumentless" 1>&2
-            echo "Try: diff -u <( sed -n \$'/# BEGIN GENERATED FROM gcc_cc1_optlines/,\$ p\\n/# END GENERATED FROM gcc_cc1_optlines/ q' "$0" ) <( . "$0" && gcc_cc1_optlines ${cc1} | optlines_to_caselines )"
-            # what to do? assume it's an option with no argument
-            canonopt="$1"; inc=1
-        ;;
-        (*)
-            # this is a filename -- do something with it
-            input_files_by_argposn[$realposn]="$1"
-        ;;
-    esac
-    # We just got "canonopt" and "optarg" -- do something with them.
-    # We are keeping:
-    # input_files_by_argposn  sparse array, one entry for each arg that is an input file
-    # canonopts_by_argposn    sparse array, one entry for each arg that is an option
-    # inc_by_argposn          sparse array, one entry for whenever there is an 'inc' > 1
-    # optposns_by_opt         associative array, one entry (space-sep list of indices) per canonopt seen
-    # argposns_by_opt         associative array, one entry (space-sep list of indices) per canonopt seen
-    #    ^-- is this really useful? for a JARG it gives us the whole opt, not the isolated optarg
-    #    Maybe we should just use the inc and keep optargs_by_argposn? YES
-    # optargs_by_argposn      sparse array, one entry (the optarg) for each arg that embodies an optarg
-    # incs_by_argposn         how many to increment argpos by to get to the next input file or opt
-    # REMEMBER: be consistent about "posn" versus "pos"
-    # We need to remember 'increments' on a per-argposn basis.
-    # We extend this to capture the optarg also.
-    # At any position, there may be an optarg... e.g. for -foo=bar, "bar" is at
-    # whatever position "-foo" is at, but for "-foo bar", "bar" is at the next position.
-    if [[ $inc -gt 1 ]]; then incs_by_argposn[$realposn]="$inc"; fi
-    if [[ -n "$canonopt" ]]; then
-        canonopts_by_argposn[$realposn]="$canonopt"
-        existing_optposns_for_this_opt="${optposns_by_opt["$canonopt"]}"
-        optposns_by_opt["$canonopt"]="${existing_optposns_for_this_opt:+${existing_optposns_for_this_opt} } $realposn"
-        if [[ -n "$optarg" ]]; then
-            # # remember arguments as a list of positions -- yes it's indirect but
-            # # args may have spaces in them, which would mess up a space-separated list
-            # existing_argposns_for_this_opt="${argposns_by_opt["$canonopt"]}"
-            # argposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} } $realposn"
+esac
+#        (-) # stdin/stdout
+#            # this is a filename -- do something with it
+#            input_files_by_argposn[$realposn]="$1"
+#        ;;
+#        (-*)    # unrecognised option
+#            echo "WARNING: unrecognised optionlike argument $1; assuming argumentless" 1>&2
+#            echo "Try: diff -u <( sed -n \$'/# BEGIN GENERATED FROM gcc_cc1_optlines/,\$ p\\n/# END GENERATED FROM gcc_cc1_optlines/ q' "$0" ) <( . "$0" && gcc_cc1_optlines ${cc1} | optlines_to_caselines )"
+#            # what to do? assume it's an option with no argument
+#            canonopt="$1"; inc=1
+#        ;;
+#        (*)
+#            # this is a filename -- do something with it
+#            input_files_by_argposn[$realposn]="$1"
+#        ;;
+#    esac
+#    # We just got "canonopt" and "optarg" -- do something with them.
+#    # We are keeping:
+#    # input_files_by_argposn  sparse array, one entry for each arg that is an input file
+#    # canonopts_by_argposn    sparse array, one entry for each arg that is an option
+#    # inc_by_argposn          sparse array, one entry for whenever there is an 'inc' > 1
+#    # optposns_by_opt         associative array, one entry (space-sep list of indices) per canonopt seen
+#    # optargposns_by_opt      associative array, one entry (space-sep list of indices) per canonopt seen
+#    #    ^-- is this really useful? for a JARG it gives us the whole opt, not the isolated optarg
+#    #    Maybe we should just use the inc and keep optargs_by_argposn? YES
+#    # optargs_by_argposn      sparse array, one entry (the optarg) for each arg that embodies an optarg
+#    # incs_by_argposn         how many to increment argpos by to get to the next input file or opt
+#    # REMEMBER: be consistent about "posn" versus "pos"
+#    # We need to remember 'increments' on a per-argposn basis.
+#    # We extend this to capture the optarg also.
+#    # At any position, there may be an optarg... e.g. for -foo=bar, "bar" is at
+#    # whatever position "-foo" is at, but for "-foo bar", "bar" is at the next position.
+#    if [[ $inc -gt 1 ]]; then incs_by_argposn[$realposn]="$inc"; fi
+#    if [[ -n "$canonopt" ]]; then
+#        canonopts_by_argposn[$realposn]="$canonopt"
+#        existing_optposns_for_this_opt="${optposns_by_opt["$canonopt"]}"
+#        optposns_by_opt["$canonopt"]="${existing_optposns_for_this_opt:+${existing_optposns_for_this_opt} }$realposn"
+#        if [[ -n "$optarg" ]]; then
+#            # # remember arguments as a list of positions -- yes it's indirect but
+#            # # args may have spaces in them, which would mess up a space-separated list
+#            # existing_argposns_for_this_opt="${optargposns_by_opt["$canonopt"]}"
+#            # optargposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} }$realposn"
+#
+#            # We have an arg and a canonopt, but since some optargs are JARGS,
+#            # the optarg may or may not be isolated in the argument list;
+#            # If it is, it is at the next argposn and inc is 2. Otherwise it is
+#            # jammed into the string at the current argposn and inc is 1.
+#            # (One day we may want to capture multiple args, in forms like
+#            # -foptimize-blah=foo, where both "blah" and "foo" are arguments.
+#            # That will make all the above 'case' statment more interesting but
+#            # it should still basically fit the model.
+#            optargs_by_argposn[$(( $realposn + $inc - 1))]="$optarg"
+#            # Also remember arguments as a list of positions -- yes it's indirect but
+#            # args may have spaces in them, which would mess up a space-separated list
+#            existing_argposns_for_this_opt="${optargposns_by_opt["$canonopt"]}"
+#            optargposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} }$realposn"
+#        fi
+#    fi
+#
+#    # snarf the unmodified arg and increment realpos
+#    for n in `seq 1 $inc`; do
+#         { gcc_cc1_args[$realposn]="$1"
+#           shift && \
+#           realposn=$(( $realposn + 1 )) && \
+#           gcc_cc1_argcount=$(( $gcc_cc1_argcount + 1 ))
+#         } || return
+#    done
+#    
+#    # end of our top-level 'while' loop: if we're out of args, we returned above
+#    done
+}
 
-            # We have an arg and a canonopt, but since some optargs are JARGS,
-            # the optarg may or may not be isolated in the argument list;
-            # If it is, it is at the next argposn and inc is 2. Otherwise it is
-            # jammed into the string at the current argposn and inc is 1.
-            # (One day we may want to capture multiple args, in forms like
-            # -foptimize-blah=foo, where both "blah" and "foo" are arguments.
-            # That will make all the above 'case' statment more interesting but
-            # it should still basically fit the model.
-            optargs_by_argposn[$(( $realposn + $inc - 1))]="$optarg"
-            # Also remember arguments as a list of positions -- yes it's indirect but
-            # args may have spaces in them, which would mess up a space-separated list
-            existing_argposns_for_this_opt="${argposns_by_opt["$canonopt"]}"
-            argposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} } $realposn"
-        fi
-    fi
-
-    # snarf the unmodified arg and increment realpos
-    for n in `seq 1 $inc`; do
-         { cc1_args[$realposn]="$1"
-           shift && \
-           realposn=$(( $realposn + 1 )) && \
-           cc1_argcount=$(( $cc1_argcount + 1 ))
-         } || return
-    done
-    
-    # end of our top-level 'while' loop: if we're out of args, we returned above
-    done
+clang_optcases () {
+case "$1" in
+# BEGIN GENERATED FROM clang_optlines | optlines_to_caselines
+(-z)  canonopt="-z"; optarg="$2"; inc=2;;
+(-x)  canonopt="-x"; optarg="$2"; inc=2;;
+(-working-directory)  canonopt="-working-directory"; optarg="$2"; inc=2;;
+(-w)   canonopt="-w"; inc=1 ;;
+(-vtordisp-mode=*) canonopt="-vtordisp-mode"; optarg="$( echo "$1" | sed -E "s^-vtordisp-mode=^^" )"; inc=1 ;;
+(-version)   canonopt="-version"; inc=1 ;;
+(-verify=*) canonopt="-verify"; optarg="$( echo "$1" | sed -E "s^-verify=^^" )"; inc=1 ;;
+(-verify-pch)   canonopt="-verify-pch"; inc=1 ;;
+(-verify-ignore-unexpected=*) canonopt="-verify-ignore-unexpected"; optarg="$( echo "$1" | sed -E "s^-verify-ignore-unexpected=^^" )"; inc=1 ;;
+(-verify-ignore-unexpected)   canonopt="-verify-ignore-unexpected"; inc=1 ;;
+(-verify)   canonopt="-verify"; inc=1 ;;
+(-vectorize-slp)   canonopt="-vectorize-slp"; inc=1 ;;
+(-vectorize-loops)   canonopt="-vectorize-loops"; inc=1 ;;
+(-v)   canonopt="-v"; inc=1 ;;
+(-unwindlib=*) canonopt="-unwindlib"; optarg="$( echo "$1" | sed -E "s^-unwindlib=^^" )"; inc=1 ;;
+(-unoptimized-cfg)   canonopt="-unoptimized-cfg"; inc=1 ;;
+(-undef)   canonopt="-undef"; inc=1 ;;
+(-tune-cpu)  canonopt="-tune-cpu"; optarg="$2"; inc=2;;
+(-triple)  canonopt="-triple"; optarg="$2"; inc=2;;
+(-trim-egraph)   canonopt="-trim-egraph"; inc=1 ;;
+(-trigraphs)   canonopt="-trigraphs"; inc=1 ;;
+(-traditional-cpp)   canonopt="-traditional-cpp"; inc=1 ;;
+(-time)   canonopt="-time"; inc=1 ;;
+(-templight-dump)   canonopt="-templight-dump"; inc=1 ;;
+(-target-sdk-version=*) canonopt="-target-sdk-version"; optarg="$( echo "$1" | sed -E "s^-target-sdk-version=^^" )"; inc=1 ;;
+(-target-linker-version)  canonopt="-target-linker-version"; optarg="$2"; inc=2;;
+(-target-feature)  canonopt="-target-feature"; optarg="$2"; inc=2;;
+(-target-cpu)  canonopt="-target-cpu"; optarg="$2"; inc=2;;
+(-target-abi)  canonopt="-target-abi"; optarg="$2"; inc=2;;
+(-sys-header-deps)   canonopt="-sys-header-deps"; inc=1 ;;
+(-sycl-std=*) canonopt="-sycl-std"; optarg="$( echo "$1" | sed -E "s^-sycl-std=^^" )"; inc=1 ;;
+(-stdlib=*) canonopt="-stdlib"; optarg="$( echo "$1" | sed -E "s^-stdlib=^^" )"; inc=1 ;;
+(-stdlib++-isystem)  canonopt="-stdlib++-isystem"; optarg="$2"; inc=2;;
+(-std=*) canonopt="-std"; optarg="$( echo "$1" | sed -E "s^-std=^^" )"; inc=1 ;;
+(-stats-file=*) canonopt="-stats-file"; optarg="$( echo "$1" | sed -E "s^-stats-file=^^" )"; inc=1 ;;
+(-static-openmp)   canonopt="-static-openmp"; inc=1 ;;
+(-static-libsan)   canonopt="-static-libsan"; inc=1 ;;
+(-static-define)   canonopt="-static-define"; inc=1 ;;
+(-stack-usage-file)  canonopt="-stack-usage-file"; optarg="$2"; inc=2;;
+(-stack-protector)  canonopt="-stack-protector"; optarg="$2"; inc=2;;
+(-stack-protector-buffer-size)  canonopt="-stack-protector-buffer-size"; optarg="$2"; inc=2;;
+(-split-dwarf-output)  canonopt="-split-dwarf-output"; optarg="$2"; inc=2;;
+(-split-dwarf-file)  canonopt="-split-dwarf-file"; optarg="$2"; inc=2;;
+(-shared-libsan)   canonopt="-shared-libsan"; inc=1 ;;
+(-setup-static-analyzer)   canonopt="-setup-static-analyzer"; inc=1 ;;
+(-serialize-diagnostics)  canonopt="-serialize-diagnostics"; optarg="$2"; inc=2;;
+(-serialize-diagnostic-file)  canonopt="-serialize-diagnostic-file"; optarg="$2"; inc=2;;
+(-save-temps=*) canonopt="-save-temps"; optarg="$( echo "$1" | sed -E "s^-save-temps=^^" )"; inc=1 ;;
+(-save-temps)   canonopt="-save-temps"; inc=1 ;;
+(-save-stats=*) canonopt="-save-stats"; optarg="$( echo "$1" | sed -E "s^-save-stats=^^" )"; inc=1 ;;
+(-save-stats)   canonopt="-save-stats"; inc=1 ;;
+(-rtlib=*) canonopt="-rtlib"; optarg="$( echo "$1" | sed -E "s^-rtlib=^^" )"; inc=1 ;;
+(-round-trip-args)   canonopt="-round-trip-args"; inc=1 ;;
+(-rewrite-test)   canonopt="-rewrite-test"; inc=1 ;;
+(-rewrite-objc)   canonopt="-rewrite-objc"; inc=1 ;;
+(-rewrite-macros)   canonopt="-rewrite-macros"; inc=1 ;;
+(-rewrite-legacy-objc)   canonopt="-rewrite-legacy-objc"; inc=1 ;;
+(-resource-dir)  canonopt="-resource-dir"; optarg="$2"; inc=2;;
+(-remap-file)  canonopt="-remap-file"; optarg="$2"; inc=2;;
+(-relocatable-pch)   canonopt="-relocatable-pch"; inc=1 ;;
+(-relaxed-aliasing)   canonopt="-relaxed-aliasing"; inc=1 ;;
+(-record-command-line)  canonopt="-record-command-line"; optarg="$2"; inc=2;;
+(-pthread)   canonopt="-pthread"; inc=1 ;;
+(-print-targets)   canonopt="-print-targets"; inc=1 ;;
+(-print-target-triple)   canonopt="-print-target-triple"; inc=1 ;;
+(-print-supported-cpus)   canonopt="-print-supported-cpus"; inc=1 ;;
+(-print-stats)   canonopt="-print-stats"; inc=1 ;;
+(-print-search-dirs)   canonopt="-print-search-dirs"; inc=1 ;;
+(-print-runtime-dir)   canonopt="-print-runtime-dir"; inc=1 ;;
+(-print-rocm-search-dirs)   canonopt="-print-rocm-search-dirs"; inc=1 ;;
+(-print-resource-dir)   canonopt="-print-resource-dir"; inc=1 ;;
+(-print-prog-name=*) canonopt="-print-prog-name"; optarg="$( echo "$1" | sed -E "s^-print-prog-name=^^" )"; inc=1 ;;
+(-print-preamble)   canonopt="-print-preamble"; inc=1 ;;
+(-print-multiarch)   canonopt="-print-multiarch"; inc=1 ;;
+(-print-libgcc-file-name)   canonopt="-print-libgcc-file-name"; inc=1 ;;
+(-print-ivar-layout)   canonopt="-print-ivar-layout"; inc=1 ;;
+(-print-file-name=*) canonopt="-print-file-name"; optarg="$( echo "$1" | sed -E "s^-print-file-name=^^" )"; inc=1 ;;
+(-print-effective-triple)   canonopt="-print-effective-triple"; inc=1 ;;
+(-print-dependency-directives-minimized-source)   canonopt="-print-dependency-directives-minimized-source"; inc=1 ;;
+(-preamble-bytes=*) canonopt="-preamble-bytes"; optarg="$( echo "$1" | sed -E "s^-preamble-bytes=^^" )"; inc=1 ;;
+(-plugin)  canonopt="-plugin"; optarg="$2"; inc=2;;
+(-plugin-arg-*) canonopt="-plugin-arg-"; optarg="$( echo "$1" | sed -E "s^-plugin-arg-^^" )"; inc=1 ;;
+(-pipe)   canonopt="-pipe"; inc=1 ;;
+(-pic-level)  canonopt="-pic-level"; optarg="$2"; inc=2;;
+(-pic-is-pie)   canonopt="-pic-is-pie"; inc=1 ;;
+(-pg)   canonopt="-pg"; inc=1 ;;
+(-pedantic)   canonopt="-pedantic"; inc=1 ;;
+(-pch-through-header=*) canonopt="-pch-through-header"; optarg="$( echo "$1" | sed -E "s^-pch-through-header=^^" )"; inc=1 ;;
+(-pch-through-hdrstop-use)   canonopt="-pch-through-hdrstop-use"; inc=1 ;;
+(-pch-through-hdrstop-create)   canonopt="-pch-through-hdrstop-create"; inc=1 ;;
+(-opt-record-passes)  canonopt="-opt-record-passes"; optarg="$2"; inc=2;;
+(-opt-record-format)  canonopt="-opt-record-format"; optarg="$2"; inc=2;;
+(-opt-record-file)  canonopt="-opt-record-file"; optarg="$2"; inc=2;;
+(-objcxx-isystem)  canonopt="-objcxx-isystem"; optarg="$2"; inc=2;;
+(-objcmt-whitelist-dir-path=*) canonopt="-objcmt-whitelist-dir-path"; optarg="$( echo "$1" | sed -E "s^-objcmt-whitelist-dir-path=^^" )"; inc=1 ;;
+(-objcmt-returns-innerpointer-property)   canonopt="-objcmt-returns-innerpointer-property"; inc=1 ;;
+(-objcmt-ns-nonatomic-iosonly)   canonopt="-objcmt-ns-nonatomic-iosonly"; inc=1 ;;
+(-objcmt-migrate-subscripting)   canonopt="-objcmt-migrate-subscripting"; inc=1 ;;
+(-objcmt-migrate-readwrite-property)   canonopt="-objcmt-migrate-readwrite-property"; inc=1 ;;
+(-objcmt-migrate-readonly-property)   canonopt="-objcmt-migrate-readonly-property"; inc=1 ;;
+(-objcmt-migrate-protocol-conformance)   canonopt="-objcmt-migrate-protocol-conformance"; inc=1 ;;
+(-objcmt-migrate-property-dot-syntax)   canonopt="-objcmt-migrate-property-dot-syntax"; inc=1 ;;
+(-objcmt-migrate-property)   canonopt="-objcmt-migrate-property"; inc=1 ;;
+(-objcmt-migrate-ns-macros)   canonopt="-objcmt-migrate-ns-macros"; inc=1 ;;
+(-objcmt-migrate-literals)   canonopt="-objcmt-migrate-literals"; inc=1 ;;
+(-objcmt-migrate-instancetype)   canonopt="-objcmt-migrate-instancetype"; inc=1 ;;
+(-objcmt-migrate-designated-init)   canonopt="-objcmt-migrate-designated-init"; inc=1 ;;
+(-objcmt-migrate-annotation)   canonopt="-objcmt-migrate-annotation"; inc=1 ;;
+(-objcmt-migrate-all)   canonopt="-objcmt-migrate-all"; inc=1 ;;
+(-objcmt-atomic-property)   canonopt="-objcmt-atomic-property"; inc=1 ;;
+(-objc-isystem)  canonopt="-objc-isystem"; optarg="$2"; inc=2;;
+(-o)  canonopt="-o"; optarg="$2"; inc=2;;
+(-nostdsysteminc)   canonopt="-nostdsysteminc"; inc=1 ;;
+(-nostdinc++)   canonopt="-nostdinc++"; inc=1 ;;
+(-nogpulib)   canonopt="-nogpulib"; inc=1 ;;
+(-nogpuinc)   canonopt="-nogpuinc"; inc=1 ;;
+(-nobuiltininc)   canonopt="-nobuiltininc"; inc=1 ;;
+(-no-struct-path-tbaa)   canonopt="-no-struct-path-tbaa"; inc=1 ;;
+(-no-round-trip-args)   canonopt="-no-round-trip-args"; inc=1 ;;
+(-no-pthread)   canonopt="-no-pthread"; inc=1 ;;
+(-no-ns-alloc-error)   canonopt="-no-ns-alloc-error"; inc=1 ;;
+(-no-implicit-float)   canonopt="-no-implicit-float"; inc=1 ;;
+(-no-finalize-removal)   canonopt="-no-finalize-removal"; inc=1 ;;
+(-no-emit-llvm-uselists)   canonopt="-no-emit-llvm-uselists"; inc=1 ;;
+(-no-code-completion-ns-level-decls)   canonopt="-no-code-completion-ns-level-decls"; inc=1 ;;
+(-no-code-completion-globals)   canonopt="-no-code-completion-globals"; inc=1 ;;
+(-new-struct-path-tbaa)   canonopt="-new-struct-path-tbaa"; inc=1 ;;
+(-mwavefrontsize64)   canonopt="-mwavefrontsize64"; inc=1 ;;
+(-munwind-tables)   canonopt="-munwind-tables"; inc=1 ;;
+(-munsafe-fp-atomics)   canonopt="-munsafe-fp-atomics"; inc=1 ;;
+(-munaligned-access)   canonopt="-munaligned-access"; inc=1 ;;
+(-mtune=*) canonopt="-mtune"; optarg="$( echo "$1" | sed -E "s^-mtune=^^" )"; inc=1 ;;
+(-mtp)  canonopt="-mtp"; optarg="$2"; inc=2;;
+(-mtp=*) canonopt="-mtp"; optarg="$( echo "$1" | sed -E "s^-mtp=^^" )"; inc=1 ;;
+(-mtls-size=*) canonopt="-mtls-size"; optarg="$( echo "$1" | sed -E "s^-mtls-size=^^" )"; inc=1 ;;
+(-mtls-direct-seg-refs)   canonopt="-mtls-direct-seg-refs"; inc=1 ;;
+(-mthread-model)  canonopt="-mthread-model"; optarg="$2"; inc=2;;
+(-mtgsplit)   canonopt="-mtgsplit"; inc=1 ;;
+(-mt-migrate-directory)  canonopt="-mt-migrate-directory"; optarg="$2"; inc=2;;
+(-msvr4-struct-return)   canonopt="-msvr4-struct-return"; inc=1 ;;
+(-msve-vector-bits=*) canonopt="-msve-vector-bits"; optarg="$( echo "$1" | sed -E "s^-msve-vector-bits=^^" )"; inc=1 ;;
+(-mstrict-align)   canonopt="-mstrict-align"; inc=1 ;;
+(-mstackrealign)   canonopt="-mstackrealign"; inc=1 ;;
+(-mstack-protector-guard=*) canonopt="-mstack-protector-guard"; optarg="$( echo "$1" | sed -E "s^-mstack-protector-guard=^^" )"; inc=1 ;;
+(-mstack-protector-guard-reg=*) canonopt="-mstack-protector-guard-reg"; optarg="$( echo "$1" | sed -E "s^-mstack-protector-guard-reg=^^" )"; inc=1 ;;
+(-mstack-protector-guard-offset=*) canonopt="-mstack-protector-guard-offset"; optarg="$( echo "$1" | sed -E "s^-mstack-protector-guard-offset=^^" )"; inc=1 ;;
+(-mstack-probe-size=*) canonopt="-mstack-probe-size"; optarg="$( echo "$1" | sed -E "s^-mstack-probe-size=^^" )"; inc=1 ;;
+(-mstack-arg-probe)   canonopt="-mstack-arg-probe"; inc=1 ;;
+(-mstack-alignment=*) canonopt="-mstack-alignment"; optarg="$( echo "$1" | sed -E "s^-mstack-alignment=^^" )"; inc=1 ;;
+(-mspeculative-load-hardening)   canonopt="-mspeculative-load-hardening"; inc=1 ;;
+(-msoft-float)   canonopt="-msoft-float"; inc=1 ;;
+(-msmall-data-limit)  canonopt="-msmall-data-limit"; optarg="$2"; inc=2;;
+(-msmall-data-limit=*) canonopt="-msmall-data-limit"; optarg="$( echo "$1" | sed -E "s^-msmall-data-limit=^^" )"; inc=1 ;;
+(-msign-return-address=*) canonopt="-msign-return-address"; optarg="$( echo "$1" | sed -E "s^-msign-return-address=^^" )"; inc=1 ;;
+(-mseses)   canonopt="-mseses"; inc=1 ;;
+(-msave-temp-labels)   canonopt="-msave-temp-labels"; inc=1 ;;
+(-msave-restore)   canonopt="-msave-restore"; inc=1 ;;
+(-mrtd)   canonopt="-mrtd"; inc=1 ;;
+(-mrestrict-it)   canonopt="-mrestrict-it"; inc=1 ;;
+(-mrelocation-model)  canonopt="-mrelocation-model"; optarg="$2"; inc=2;;
+(-mrelax-all)   canonopt="-mrelax-all"; inc=1 ;;
+(-mrelax)   canonopt="-mrelax"; inc=1 ;;
+(-mregparm)  canonopt="-mregparm"; optarg="$2"; inc=2;;
+(-mrecord-mcount)   canonopt="-mrecord-mcount"; inc=1 ;;
+(-mreassociate)   canonopt="-mreassociate"; inc=1 ;;
+(-mqdsp6-compat)   canonopt="-mqdsp6-compat"; inc=1 ;;
+(-mprefer-vector-width=*) canonopt="-mprefer-vector-width"; optarg="$( echo "$1" | sed -E "s^-mprefer-vector-width=^^" )"; inc=1 ;;
+(-mpad-max-prefix-size=*) canonopt="-mpad-max-prefix-size"; optarg="$( echo "$1" | sed -E "s^-mpad-max-prefix-size=^^" )"; inc=1 ;;
+(-mpackets)   canonopt="-mpackets"; inc=1 ;;
+(-mpacked-stack)   canonopt="-mpacked-stack"; inc=1 ;;
+(-moutline-atomics)   canonopt="-moutline-atomics"; inc=1 ;;
+(-moutline)   canonopt="-moutline"; inc=1 ;;
+(-momit-leaf-frame-pointer)   canonopt="-momit-leaf-frame-pointer"; inc=1 ;;
+(-module-file-info)   canonopt="-module-file-info"; inc=1 ;;
+(-module-file-deps)   canonopt="-module-file-deps"; inc=1 ;;
+(-module-dependency-dir)  canonopt="-module-dependency-dir"; optarg="$2"; inc=2;;
+(-mnvs)   canonopt="-mnvs"; inc=1 ;;
+(-mnvj)   canonopt="-mnvj"; inc=1 ;;
+(-mnop-mcount)   canonopt="-mnop-mcount"; inc=1 ;;
+(-mnoexecstack)   canonopt="-mnoexecstack"; inc=1 ;;
+(-mnocrc)   canonopt="-mnocrc"; inc=1 ;;
+(-mno-wavefrontsize64)   canonopt="-mno-wavefrontsize64"; inc=1 ;;
+(-mno-unsafe-fp-atomics)   canonopt="-mno-unsafe-fp-atomics"; inc=1 ;;
+(-mno-unaligned-access)   canonopt="-mno-unaligned-access"; inc=1 ;;
+(-mno-tls-direct-seg-refs)   canonopt="-mno-tls-direct-seg-refs"; inc=1 ;;
+(-mno-tgsplit)   canonopt="-mno-tgsplit"; inc=1 ;;
+(-mno-stack-arg-probe)   canonopt="-mno-stack-arg-probe"; inc=1 ;;
+(-mno-speculative-load-hardening)   canonopt="-mno-speculative-load-hardening"; inc=1 ;;
+(-mno-seses)   canonopt="-mno-seses"; inc=1 ;;
+(-mno-save-restore)   canonopt="-mno-save-restore"; inc=1 ;;
+(-mno-restrict-it)   canonopt="-mno-restrict-it"; inc=1 ;;
+(-mno-relax)   canonopt="-mno-relax"; inc=1 ;;
+(-mno-packets)   canonopt="-mno-packets"; inc=1 ;;
+(-mno-outline-atomics)   canonopt="-mno-outline-atomics"; inc=1 ;;
+(-mno-outline)   canonopt="-mno-outline"; inc=1 ;;
+(-mno-nvs)   canonopt="-mno-nvs"; inc=1 ;;
+(-mno-nvj)   canonopt="-mno-nvj"; inc=1 ;;
+(-mno-neg-immediates)   canonopt="-mno-neg-immediates"; inc=1 ;;
+(-mno-mt)   canonopt="-mno-mt"; inc=1 ;;
+(-mno-msa)   canonopt="-mno-msa"; inc=1 ;;
+(-mno-ms-bitfields)   canonopt="-mno-ms-bitfields"; inc=1 ;;
+(-mno-movt)   canonopt="-mno-movt"; inc=1 ;;
+(-mno-memops)   canonopt="-mno-memops"; inc=1 ;;
+(-mno-madd4)   canonopt="-mno-madd4"; inc=1 ;;
+(-mno-lvi-hardening)   canonopt="-mno-lvi-hardening"; inc=1 ;;
+(-mno-lvi-cfi)   canonopt="-mno-lvi-cfi"; inc=1 ;;
+(-mno-long-calls)   canonopt="-mno-long-calls"; inc=1 ;;
+(-mno-local-sdata)   canonopt="-mno-local-sdata"; inc=1 ;;
+(-mno-incremental-linker-compatible)   canonopt="-mno-incremental-linker-compatible"; inc=1 ;;
+(-mno-implicit-float)   canonopt="-mno-implicit-float"; inc=1 ;;
+(-mno-hvx)   canonopt="-mno-hvx"; inc=1 ;;
+(-mno-gpopt)   canonopt="-mno-gpopt"; inc=1 ;;
+(-mno-global-merge)   canonopt="-mno-global-merge"; inc=1 ;;
+(-mno-fix-cortex-a53-835769)   canonopt="-mno-fix-cortex-a53-835769"; inc=1 ;;
+(-mno-extern-sdata)   canonopt="-mno-extern-sdata"; inc=1 ;;
+(-mno-execute-only)   canonopt="-mno-execute-only"; inc=1 ;;
+(-mno-embedded-data)   canonopt="-mno-embedded-data"; inc=1 ;;
+(-mno-cumode)   canonopt="-mno-cumode"; inc=1 ;;
+(-mno-crc)   canonopt="-mno-crc"; inc=1 ;;
+(-mno-code-object-v3)   canonopt="-mno-code-object-v3"; inc=1 ;;
+(-mno-backchain)   canonopt="-mno-backchain"; inc=1 ;;
+(-mno-amdgpu-ieee)   canonopt="-mno-amdgpu-ieee"; inc=1 ;;
+(-mno-abicalls)   canonopt="-mno-abicalls"; inc=1 ;;
+(-mmt)   canonopt="-mmt"; inc=1 ;;
+(-mmsa)   canonopt="-mmsa"; inc=1 ;;
+(-mms-bitfields)   canonopt="-mms-bitfields"; inc=1 ;;
+(-mmemops)   canonopt="-mmemops"; inc=1 ;;
+(-mmark-bti-property)   canonopt="-mmark-bti-property"; inc=1 ;;
+(-mmadd4)   canonopt="-mmadd4"; inc=1 ;;
+(-mmacosx-version-min=*) canonopt="-mmacosx-version-min"; optarg="$( echo "$1" | sed -E "s^-mmacosx-version-min=^^" )"; inc=1 ;;
+(-mlvi-hardening)   canonopt="-mlvi-hardening"; inc=1 ;;
+(-mlvi-cfi)   canonopt="-mlvi-cfi"; inc=1 ;;
+(-mlong-double-80)   canonopt="-mlong-double-80"; inc=1 ;;
+(-mlong-double-64)   canonopt="-mlong-double-64"; inc=1 ;;
+(-mlong-double-128)   canonopt="-mlong-double-128"; inc=1 ;;
+(-mlong-calls)   canonopt="-mlong-calls"; inc=1 ;;
+(-mlocal-sdata)   canonopt="-mlocal-sdata"; inc=1 ;;
+(-mllvm)  canonopt="-mllvm"; optarg="$2"; inc=2;;
+(-mlink-builtin-bitcode)  canonopt="-mlink-builtin-bitcode"; optarg="$2"; inc=2;;
+(-mlink-bitcode-file)  canonopt="-mlink-bitcode-file"; optarg="$2"; inc=2;;
+(-mlimit-float-precision)  canonopt="-mlimit-float-precision"; optarg="$2"; inc=2;;
+(-mios-version-min=*) canonopt="-mios-version-min"; optarg="$( echo "$1" | sed -E "s^-mios-version-min=^^" )"; inc=1 ;;
+(-mindirect-jump=*) canonopt="-mindirect-jump"; optarg="$( echo "$1" | sed -E "s^-mindirect-jump=^^" )"; inc=1 ;;
+(-mincremental-linker-compatible)   canonopt="-mincremental-linker-compatible"; inc=1 ;;
+(-migrate)   canonopt="-migrate"; inc=1 ;;
+(-mignore-xcoff-visibility)   canonopt="-mignore-xcoff-visibility"; inc=1 ;;
+(-miamcu)   canonopt="-miamcu"; inc=1 ;;
+(-mhvx=*) canonopt="-mhvx"; optarg="$( echo "$1" | sed -E "s^-mhvx=^^" )"; inc=1 ;;
+(-mhvx-length=*) canonopt="-mhvx-length"; optarg="$( echo "$1" | sed -E "s^-mhvx-length=^^" )"; inc=1 ;;
+(-mhvx)   canonopt="-mhvx"; inc=1 ;;
+(-mharden-sls=*) canonopt="-mharden-sls"; optarg="$( echo "$1" | sed -E "s^-mharden-sls=^^" )"; inc=1 ;;
+(-mgpopt)   canonopt="-mgpopt"; inc=1 ;;
+(-mglobal-merge)   canonopt="-mglobal-merge"; inc=1 ;;
+(-mgeneral-regs-only)   canonopt="-mgeneral-regs-only"; inc=1 ;;
+(-mframe-pointer=*) canonopt="-mframe-pointer"; optarg="$( echo "$1" | sed -E "s^-mframe-pointer=^^" )"; inc=1 ;;
+(-mfpmath)  canonopt="-mfpmath"; optarg="$2"; inc=2;;
+(-mfp64)   canonopt="-mfp64"; inc=1 ;;
+(-mfp32)   canonopt="-mfp32"; inc=1 ;;
+(-mfloat-abi)  canonopt="-mfloat-abi"; optarg="$2"; inc=2;;
+(-mfix-cortex-a53-835769)   canonopt="-mfix-cortex-a53-835769"; inc=1 ;;
+(-mfentry)   canonopt="-mfentry"; inc=1 ;;
+(-mextern-sdata)   canonopt="-mextern-sdata"; inc=1 ;;
+(-mexecute-only)   canonopt="-mexecute-only"; inc=1 ;;
+(-mexec-model=*) canonopt="-mexec-model"; optarg="$( echo "$1" | sed -E "s^-mexec-model=^^" )"; inc=1 ;;
+(-menable-unsafe-fp-math)   canonopt="-menable-unsafe-fp-math"; inc=1 ;;
+(-menable-no-nans)   canonopt="-menable-no-nans"; inc=1 ;;
+(-menable-no-infs)   canonopt="-menable-no-infs"; inc=1 ;;
+(-menable-experimental-extensions)   canonopt="-menable-experimental-extensions"; inc=1 ;;
+(-membedded-data)   canonopt="-membedded-data"; inc=1 ;;
+(-meabi)  canonopt="-meabi"; optarg="$2"; inc=2;;
+(-mdouble=*) canonopt="-mdouble"; optarg="$( echo "$1" | sed -E "s^-mdouble=^^" )"; inc=1 ;;
+(-mdisable-tail-calls)   canonopt="-mdisable-tail-calls"; inc=1 ;;
+(-mdebug-pass)  canonopt="-mdebug-pass"; optarg="$2"; inc=2;;
+(-mcumode)   canonopt="-mcumode"; inc=1 ;;
+(-mcrc)   canonopt="-mcrc"; inc=1 ;;
+(-mconstructor-aliases)   canonopt="-mconstructor-aliases"; inc=1 ;;
+(-mcode-object-version=*) canonopt="-mcode-object-version"; optarg="$( echo "$1" | sed -E "s^-mcode-object-version=^^" )"; inc=1 ;;
+(-mcode-object-v3)   canonopt="-mcode-object-v3"; inc=1 ;;
+(-mcmse)   canonopt="-mcmse"; inc=1 ;;
+(-mcmodel=*) canonopt="-mcmodel"; optarg="$( echo "$1" | sed -E "s^-mcmodel=^^" )"; inc=1 ;;
+(-mbranches-within-32B-boundaries)   canonopt="-mbranches-within-32B-boundaries"; inc=1 ;;
+(-mbranch-protection=*) canonopt="-mbranch-protection"; optarg="$( echo "$1" | sed -E "s^-mbranch-protection=^^" )"; inc=1 ;;
+(-mbackchain)   canonopt="-mbackchain"; inc=1 ;;
+(-massembler-no-warn)   canonopt="-massembler-no-warn"; inc=1 ;;
+(-massembler-fatal-warnings)   canonopt="-massembler-fatal-warnings"; inc=1 ;;
+(-mamdgpu-ieee)   canonopt="-mamdgpu-ieee"; inc=1 ;;
+(-malign-double)   canonopt="-malign-double"; inc=1 ;;
+(-malign-branch=*) canonopt="-malign-branch"; optarg="$( echo "$1" | sed -E "s^-malign-branch=^^" )"; inc=1 ;;
+(-malign-branch-boundary=*) canonopt="-malign-branch-boundary"; optarg="$( echo "$1" | sed -E "s^-malign-branch-boundary=^^" )"; inc=1 ;;
+(-maix-struct-return)   canonopt="-maix-struct-return"; inc=1 ;;
+(-main-file-name)  canonopt="-main-file-name"; optarg="$2"; inc=2;;
+(-mabicalls)   canonopt="-mabicalls"; inc=1 ;;
+(-mabi=*) canonopt="-mabi"; optarg="$( echo "$1" | sed -E "s^-mabi=^^" )"; inc=1 ;;
+(-load)  canonopt="-load"; optarg="$2"; inc=2;;
+(-iwithsysroot)  canonopt="-iwithsysroot"; optarg="$2"; inc=2;;
+(-iwithprefixbefore)  canonopt="-iwithprefixbefore"; optarg="$2"; inc=2;;
+(-iwithprefix)  canonopt="-iwithprefix"; optarg="$2"; inc=2;;
+(-ivfsoverlay)  canonopt="-ivfsoverlay"; optarg="$2"; inc=2;;
+(-isystem)  canonopt="-isystem"; optarg="$2"; inc=2;;
+(-isystem-after)  canonopt="-isystem-after"; optarg="$2"; inc=2;;
+(-isysroot)  canonopt="-isysroot"; optarg="$2"; inc=2;;
+(-iquote)  canonopt="-iquote"; optarg="$2"; inc=2;;
+(-iprefix)  canonopt="-iprefix"; optarg="$2"; inc=2;;
+(-internal-isystem)  canonopt="-internal-isystem"; optarg="$2"; inc=2;;
+(-internal-externc-isystem)  canonopt="-internal-externc-isystem"; optarg="$2"; inc=2;;
+(-init-only)   canonopt="-init-only"; inc=1 ;;
+(-index-header-map)   canonopt="-index-header-map"; inc=1 ;;
+(-include)  canonopt="-include"; optarg="$2"; inc=2;;
+(-include-pch)  canonopt="-include-pch"; optarg="$2"; inc=2;;
+(-imacros)  canonopt="-imacros"; optarg="$2"; inc=2;;
+(-iframeworkwithsysroot)  canonopt="-iframeworkwithsysroot"; optarg="$2"; inc=2;;
+(-iframework)  canonopt="-iframework"; optarg="$2"; inc=2;;
+(-idirafter)  canonopt="-idirafter"; optarg="$2"; inc=2;;
+(-ibuiltininc)   canonopt="-ibuiltininc"; inc=1 ;;
+(-help)   canonopt="-help"; inc=1 ;;
+(-header-include-file)  canonopt="-header-include-file"; optarg="$2"; inc=2;;
+(-gz=*) canonopt="-gz"; optarg="$( echo "$1" | sed -E "s^-gz=^^" )"; inc=1 ;;
+(-gstrict-dwarf)   canonopt="-gstrict-dwarf"; inc=1 ;;
+(-gsplit-dwarf=*) canonopt="-gsplit-dwarf"; optarg="$( echo "$1" | sed -E "s^-gsplit-dwarf=^^" )"; inc=1 ;;
+(-gno-strict-dwarf)   canonopt="-gno-strict-dwarf"; inc=1 ;;
+(-gno-inline-line-tables)   canonopt="-gno-inline-line-tables"; inc=1 ;;
+(-gno-embed-source)   canonopt="-gno-embed-source"; inc=1 ;;
+(-gno-column-info)   canonopt="-gno-column-info"; inc=1 ;;
+(-gno-codeview-ghash)   canonopt="-gno-codeview-ghash"; inc=1 ;;
+(-gmodules)   canonopt="-gmodules"; inc=1 ;;
+(-gline-tables-only)   canonopt="-gline-tables-only"; inc=1 ;;
+(-gline-directives-only)   canonopt="-gline-directives-only"; inc=1 ;;
+(-ginline-line-tables)   canonopt="-ginline-line-tables"; inc=1 ;;
+(-gembed-source)   canonopt="-gembed-source"; inc=1 ;;
+(-gdwarf64)   canonopt="-gdwarf64"; inc=1 ;;
+(-gdwarf32)   canonopt="-gdwarf32"; inc=1 ;;
+(-gdwarf-5)   canonopt="-gdwarf-5"; inc=1 ;;
+(-gdwarf-4)   canonopt="-gdwarf-4"; inc=1 ;;
+(-gdwarf-3)   canonopt="-gdwarf-3"; inc=1 ;;
+(-gdwarf-2)   canonopt="-gdwarf-2"; inc=1 ;;
+(-gdwarf)   canonopt="-gdwarf"; inc=1 ;;
+(-gcolumn-info)   canonopt="-gcolumn-info"; inc=1 ;;
+(-gcodeview-ghash)   canonopt="-gcodeview-ghash"; inc=1 ;;
+(-gcodeview)   canonopt="-gcodeview"; inc=1 ;;
+(-g)   canonopt="-g"; inc=1 ;;
+(-fzvector)   canonopt="-fzvector"; inc=1 ;;
+(-fzero-initialized-in-bss)   canonopt="-fzero-initialized-in-bss"; inc=1 ;;
+(-fxray-selected-function-group=*) canonopt="-fxray-selected-function-group"; optarg="$( echo "$1" | sed -E "s^-fxray-selected-function-group=^^" )"; inc=1 ;;
+(-fxray-never-instrument=*) canonopt="-fxray-never-instrument"; optarg="$( echo "$1" | sed -E "s^-fxray-never-instrument=^^" )"; inc=1 ;;
+(-fxray-modes=*) canonopt="-fxray-modes"; optarg="$( echo "$1" | sed -E "s^-fxray-modes=^^" )"; inc=1 ;;
+(-fxray-link-deps)   canonopt="-fxray-link-deps"; inc=1 ;;
+(-fxray-instrumentation-bundle=*) canonopt="-fxray-instrumentation-bundle"; optarg="$( echo "$1" | sed -E "s^-fxray-instrumentation-bundle=^^" )"; inc=1 ;;
+(-fxray-instrument)   canonopt="-fxray-instrument"; inc=1 ;;
+(-fxray-instruction-threshold=*) canonopt="-fxray-instruction-threshold"; optarg="$( echo "$1" | sed -E "s^-fxray-instruction-threshold=^^" )"; inc=1 ;;
+(-fxray-ignore-loops)   canonopt="-fxray-ignore-loops"; inc=1 ;;
+(-fxray-function-index)   canonopt="-fxray-function-index"; inc=1 ;;
+(-fxray-function-groups=*) canonopt="-fxray-function-groups"; optarg="$( echo "$1" | sed -E "s^-fxray-function-groups=^^" )"; inc=1 ;;
+(-fxray-attr-list=*) canonopt="-fxray-attr-list"; optarg="$( echo "$1" | sed -E "s^-fxray-attr-list=^^" )"; inc=1 ;;
+(-fxray-always-instrument=*) canonopt="-fxray-always-instrument"; optarg="$( echo "$1" | sed -E "s^-fxray-always-instrument=^^" )"; inc=1 ;;
+(-fxray-always-emit-typedevents)   canonopt="-fxray-always-emit-typedevents"; inc=1 ;;
+(-fxray-always-emit-customevents)   canonopt="-fxray-always-emit-customevents"; inc=1 ;;
+(-fxl-pragma-pack)   canonopt="-fxl-pragma-pack"; inc=1 ;;
+(-fwritable-strings)   canonopt="-fwritable-strings"; inc=1 ;;
+(-fwrapv)   canonopt="-fwrapv"; inc=1 ;;
+(-fwhole-program-vtables)   canonopt="-fwhole-program-vtables"; inc=1 ;;
+(-fwchar-type=*) canonopt="-fwchar-type"; optarg="$( echo "$1" | sed -E "s^-fwchar-type=^^" )"; inc=1 ;;
+(-fwasm-exceptions)   canonopt="-fwasm-exceptions"; inc=1 ;;
+(-fvisibility)  canonopt="-fvisibility"; optarg="$2"; inc=2;;
+(-fvisibility=*) canonopt="-fvisibility"; optarg="$( echo "$1" | sed -E "s^-fvisibility=^^" )"; inc=1 ;;
+(-fvisibility-nodllstorageclass=*) canonopt="-fvisibility-nodllstorageclass"; optarg="$( echo "$1" | sed -E "s^-fvisibility-nodllstorageclass=^^" )"; inc=1 ;;
+(-fvisibility-ms-compat)   canonopt="-fvisibility-ms-compat"; inc=1 ;;
+(-fvisibility-inlines-hidden-static-local-var)   canonopt="-fvisibility-inlines-hidden-static-local-var"; inc=1 ;;
+(-fvisibility-inlines-hidden)   canonopt="-fvisibility-inlines-hidden"; inc=1 ;;
+(-fvisibility-global-new-delete-hidden)   canonopt="-fvisibility-global-new-delete-hidden"; inc=1 ;;
+(-fvisibility-from-dllstorageclass)   canonopt="-fvisibility-from-dllstorageclass"; inc=1 ;;
+(-fvisibility-externs-nodllstorageclass=*) canonopt="-fvisibility-externs-nodllstorageclass"; optarg="$( echo "$1" | sed -E "s^-fvisibility-externs-nodllstorageclass=^^" )"; inc=1 ;;
+(-fvisibility-externs-dllimport=*) canonopt="-fvisibility-externs-dllimport"; optarg="$( echo "$1" | sed -E "s^-fvisibility-externs-dllimport=^^" )"; inc=1 ;;
+(-fvisibility-dllexport=*) canonopt="-fvisibility-dllexport"; optarg="$( echo "$1" | sed -E "s^-fvisibility-dllexport=^^" )"; inc=1 ;;
+(-fvirtual-function-elimination)   canonopt="-fvirtual-function-elimination"; inc=1 ;;
+(-fverify-debuginfo-preserve-export=*) canonopt="-fverify-debuginfo-preserve-export"; optarg="$( echo "$1" | sed -E "s^-fverify-debuginfo-preserve-export=^^" )"; inc=1 ;;
+(-fverify-debuginfo-preserve)   canonopt="-fverify-debuginfo-preserve"; inc=1 ;;
+(-fverbose-asm)   canonopt="-fverbose-asm"; inc=1 ;;
+(-fvectorize)   canonopt="-fvectorize"; inc=1 ;;
+(-fveclib=*) canonopt="-fveclib"; optarg="$( echo "$1" | sed -E "s^-fveclib=^^" )"; inc=1 ;;
+(-fvalidate-ast-input-files-content)   canonopt="-fvalidate-ast-input-files-content"; inc=1 ;;
+(-fuse-register-sized-bitfield-access)   canonopt="-fuse-register-sized-bitfield-access"; inc=1 ;;
+(-fuse-line-directives)   canonopt="-fuse-line-directives"; inc=1 ;;
+(-fuse-init-array)   canonopt="-fuse-init-array"; inc=1 ;;
+(-fuse-cxa-atexit)   canonopt="-fuse-cxa-atexit"; inc=1 ;;
+(-fuse-cuid=*) canonopt="-fuse-cuid"; optarg="$( echo "$1" | sed -E "s^-fuse-cuid=^^" )"; inc=1 ;;
+(-fuse-ctor-homing)   canonopt="-fuse-ctor-homing"; inc=1 ;;
+(-funroll-loops)   canonopt="-funroll-loops"; inc=1 ;;
+(-funknown-anytype)   canonopt="-funknown-anytype"; inc=1 ;;
+(-funique-section-names)   canonopt="-funique-section-names"; inc=1 ;;
+(-funique-internal-linkage-names)   canonopt="-funique-internal-linkage-names"; inc=1 ;;
+(-funique-basic-block-section-names)   canonopt="-funique-basic-block-section-names"; inc=1 ;;
+(-function-alignment)  canonopt="-function-alignment"; optarg="$2"; inc=2;;
+(-ftype-visibility)  canonopt="-ftype-visibility"; optarg="$2"; inc=2;;
+(-ftrivial-auto-var-init=*) canonopt="-ftrivial-auto-var-init"; optarg="$( echo "$1" | sed -E "s^-ftrivial-auto-var-init=^^" )"; inc=1 ;;
+(-ftrivial-auto-var-init-stop-after=*) canonopt="-ftrivial-auto-var-init-stop-after"; optarg="$( echo "$1" | sed -E "s^-ftrivial-auto-var-init-stop-after=^^" )"; inc=1 ;;
+(-ftrigraphs)   canonopt="-ftrigraphs"; inc=1 ;;
+(-ftrapv-handler=*) canonopt="-ftrapv-handler"; optarg="$( echo "$1" | sed -E "s^-ftrapv-handler=^^" )"; inc=1 ;;
+(-ftrapv)   canonopt="-ftrapv"; inc=1 ;;
+(-ftrap-function=*) canonopt="-ftrap-function"; optarg="$( echo "$1" | sed -E "s^-ftrap-function=^^" )"; inc=1 ;;
+(-ftime-trace-granularity=*) canonopt="-ftime-trace-granularity"; optarg="$( echo "$1" | sed -E "s^-ftime-trace-granularity=^^" )"; inc=1 ;;
+(-ftime-trace)   canonopt="-ftime-trace"; inc=1 ;;
+(-ftime-report=*) canonopt="-ftime-report"; optarg="$( echo "$1" | sed -E "s^-ftime-report=^^" )"; inc=1 ;;
+(-fthreadsafe-statics)   canonopt="-fthreadsafe-statics"; inc=1 ;;
+(-fthinlto-index=*) canonopt="-fthinlto-index"; optarg="$( echo "$1" | sed -E "s^-fthinlto-index=^^" )"; inc=1 ;;
+(-fthin-link-bitcode=*) canonopt="-fthin-link-bitcode"; optarg="$( echo "$1" | sed -E "s^-fthin-link-bitcode=^^" )"; inc=1 ;;
+(-ftest-module-file-extension=*) canonopt="-ftest-module-file-extension"; optarg="$( echo "$1" | sed -E "s^-ftest-module-file-extension=^^" )"; inc=1 ;;
+(-ftest-coverage)   canonopt="-ftest-coverage"; inc=1 ;;
+(-ftemplate-depth)  canonopt="-ftemplate-depth"; optarg="$2"; inc=2;;
+(-ftemplate-backtrace-limit)  canonopt="-ftemplate-backtrace-limit"; optarg="$2"; inc=2;;
+(-ftabstop)  canonopt="-ftabstop"; optarg="$2"; inc=2;;
+(-fsystem-module)   canonopt="-fsystem-module"; inc=1 ;;
+(-fsycl-is-host)   canonopt="-fsycl-is-host"; inc=1 ;;
+(-fsycl-is-device)   canonopt="-fsycl-is-device"; inc=1 ;;
+(-fsycl)   canonopt="-fsycl"; inc=1 ;;
+(-fstrict-vtable-pointers)   canonopt="-fstrict-vtable-pointers"; inc=1 ;;
+(-fstrict-return)   canonopt="-fstrict-return"; inc=1 ;;
+(-fstrict-float-cast-overflow)   canonopt="-fstrict-float-cast-overflow"; inc=1 ;;
+(-fstrict-enums)   canonopt="-fstrict-enums"; inc=1 ;;
+(-fstandalone-debug)   canonopt="-fstandalone-debug"; inc=1 ;;
+(-fstack-usage)   canonopt="-fstack-usage"; inc=1 ;;
+(-fstack-size-section)   canonopt="-fstack-size-section"; inc=1 ;;
+(-fstack-protector-strong)   canonopt="-fstack-protector-strong"; inc=1 ;;
+(-fstack-protector-all)   canonopt="-fstack-protector-all"; inc=1 ;;
+(-fstack-protector)   canonopt="-fstack-protector"; inc=1 ;;
+(-fstack-clash-protection)   canonopt="-fstack-clash-protection"; inc=1 ;;
+(-fsplit-stack)   canonopt="-fsplit-stack"; inc=1 ;;
+(-fsplit-machine-functions)   canonopt="-fsplit-machine-functions"; inc=1 ;;
+(-fsplit-lto-unit)   canonopt="-fsplit-lto-unit"; inc=1 ;;
+(-fsplit-dwarf-inlining)   canonopt="-fsplit-dwarf-inlining"; inc=1 ;;
+(-fspell-checking-limit)  canonopt="-fspell-checking-limit"; optarg="$2"; inc=2;;
+(-fspell-checking)   canonopt="-fspell-checking"; inc=1 ;;
+(-fslp-vectorize)   canonopt="-fslp-vectorize"; inc=1 ;;
+(-fsjlj-exceptions)   canonopt="-fsjlj-exceptions"; inc=1 ;;
+(-fsized-deallocation)   canonopt="-fsized-deallocation"; inc=1 ;;
+(-fsigned-zeros)   canonopt="-fsigned-zeros"; inc=1 ;;
+(-fsigned-wchar)   canonopt="-fsigned-wchar"; inc=1 ;;
+(-fsigned-char)   canonopt="-fsigned-char"; inc=1 ;;
+(-fshow-source-location)   canonopt="-fshow-source-location"; inc=1 ;;
+(-fshow-skipped-includes)   canonopt="-fshow-skipped-includes"; inc=1 ;;
+(-fshow-overloads=*) canonopt="-fshow-overloads"; optarg="$( echo "$1" | sed -E "s^-fshow-overloads=^^" )"; inc=1 ;;
+(-fshow-column)   canonopt="-fshow-column"; inc=1 ;;
+(-fshort-wchar)   canonopt="-fshort-wchar"; inc=1 ;;
+(-fshort-enums)   canonopt="-fshort-enums"; inc=1 ;;
+(-fsemantic-interposition)   canonopt="-fsemantic-interposition"; inc=1 ;;
+(-fseh-exceptions)   canonopt="-fseh-exceptions"; inc=1 ;;
+(-fsave-optimization-record=*) canonopt="-fsave-optimization-record"; optarg="$( echo "$1" | sed -E "s^-fsave-optimization-record=^^" )"; inc=1 ;;
+(-fsave-optimization-record)   canonopt="-fsave-optimization-record"; inc=1 ;;
+(-fsanitize=*) canonopt="-fsanitize"; optarg="$( echo "$1" | sed -E "s^-fsanitize=^^" )"; inc=1 ;;
+(-fsanitize-undefined-strip-path-components=*) canonopt="-fsanitize-undefined-strip-path-components"; optarg="$( echo "$1" | sed -E "s^-fsanitize-undefined-strip-path-components=^^" )"; inc=1 ;;
+(-fsanitize-trap=*) canonopt="-fsanitize-trap"; optarg="$( echo "$1" | sed -E "s^-fsanitize-trap=^^" )"; inc=1 ;;
+(-fsanitize-trap)   canonopt="-fsanitize-trap"; inc=1 ;;
+(-fsanitize-thread-memory-access)   canonopt="-fsanitize-thread-memory-access"; inc=1 ;;
+(-fsanitize-thread-func-entry-exit)   canonopt="-fsanitize-thread-func-entry-exit"; inc=1 ;;
+(-fsanitize-thread-atomics)   canonopt="-fsanitize-thread-atomics"; inc=1 ;;
+(-fsanitize-system-ignorelist=*) canonopt="-fsanitize-system-ignorelist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-system-ignorelist=^^" )"; inc=1 ;;
+(-fsanitize-system-blacklist=*) canonopt="-fsanitize-system-blacklist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-system-blacklist=^^" )"; inc=1 ;;
+(-fsanitize-stats)   canonopt="-fsanitize-stats"; inc=1 ;;
+(-fsanitize-recover=*) canonopt="-fsanitize-recover"; optarg="$( echo "$1" | sed -E "s^-fsanitize-recover=^^" )"; inc=1 ;;
+(-fsanitize-minimal-runtime)   canonopt="-fsanitize-minimal-runtime"; inc=1 ;;
+(-fsanitize-memory-use-after-dtor)   canonopt="-fsanitize-memory-use-after-dtor"; inc=1 ;;
+(-fsanitize-memory-track-origins=*) canonopt="-fsanitize-memory-track-origins"; optarg="$( echo "$1" | sed -E "s^-fsanitize-memory-track-origins=^^" )"; inc=1 ;;
+(-fsanitize-memory-track-origins)   canonopt="-fsanitize-memory-track-origins"; inc=1 ;;
+(-fsanitize-ignorelist=*) canonopt="-fsanitize-ignorelist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-ignorelist=^^" )"; inc=1 ;;
+(-fsanitize-hwaddress-experimental-aliasing)   canonopt="-fsanitize-hwaddress-experimental-aliasing"; inc=1 ;;
+(-fsanitize-hwaddress-abi=*) canonopt="-fsanitize-hwaddress-abi"; optarg="$( echo "$1" | sed -E "s^-fsanitize-hwaddress-abi=^^" )"; inc=1 ;;
+(-fsanitize-coverage=*) canonopt="-fsanitize-coverage"; optarg="$( echo "$1" | sed -E "s^-fsanitize-coverage=^^" )"; inc=1 ;;
+(-fsanitize-coverage-whitelist=*) canonopt="-fsanitize-coverage-whitelist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-coverage-whitelist=^^" )"; inc=1 ;;
+(-fsanitize-coverage-type=*) canonopt="-fsanitize-coverage-type"; optarg="$( echo "$1" | sed -E "s^-fsanitize-coverage-type=^^" )"; inc=1 ;;
+(-fsanitize-coverage-trace-pc-guard)   canonopt="-fsanitize-coverage-trace-pc-guard"; inc=1 ;;
+(-fsanitize-coverage-trace-pc)   canonopt="-fsanitize-coverage-trace-pc"; inc=1 ;;
+(-fsanitize-coverage-trace-gep)   canonopt="-fsanitize-coverage-trace-gep"; inc=1 ;;
+(-fsanitize-coverage-trace-div)   canonopt="-fsanitize-coverage-trace-div"; inc=1 ;;
+(-fsanitize-coverage-trace-cmp)   canonopt="-fsanitize-coverage-trace-cmp"; inc=1 ;;
+(-fsanitize-coverage-trace-bb)   canonopt="-fsanitize-coverage-trace-bb"; inc=1 ;;
+(-fsanitize-coverage-stack-depth)   canonopt="-fsanitize-coverage-stack-depth"; inc=1 ;;
+(-fsanitize-coverage-pc-table)   canonopt="-fsanitize-coverage-pc-table"; inc=1 ;;
+(-fsanitize-coverage-no-prune)   canonopt="-fsanitize-coverage-no-prune"; inc=1 ;;
+(-fsanitize-coverage-inline-bool-flag)   canonopt="-fsanitize-coverage-inline-bool-flag"; inc=1 ;;
+(-fsanitize-coverage-inline-8bit-counters)   canonopt="-fsanitize-coverage-inline-8bit-counters"; inc=1 ;;
+(-fsanitize-coverage-indirect-calls)   canonopt="-fsanitize-coverage-indirect-calls"; inc=1 ;;
+(-fsanitize-coverage-ignorelist=*) canonopt="-fsanitize-coverage-ignorelist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-coverage-ignorelist=^^" )"; inc=1 ;;
+(-fsanitize-coverage-blacklist=*) canonopt="-fsanitize-coverage-blacklist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-coverage-blacklist=^^" )"; inc=1 ;;
+(-fsanitize-coverage-allowlist=*) canonopt="-fsanitize-coverage-allowlist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-coverage-allowlist=^^" )"; inc=1 ;;
+(-fsanitize-coverage-8bit-counters)   canonopt="-fsanitize-coverage-8bit-counters"; inc=1 ;;
+(-fsanitize-cfi-icall-generalize-pointers)   canonopt="-fsanitize-cfi-icall-generalize-pointers"; inc=1 ;;
+(-fsanitize-cfi-cross-dso)   canonopt="-fsanitize-cfi-cross-dso"; inc=1 ;;
+(-fsanitize-cfi-canonical-jump-tables)   canonopt="-fsanitize-cfi-canonical-jump-tables"; inc=1 ;;
+(-fsanitize-blacklist=*) canonopt="-fsanitize-blacklist"; optarg="$( echo "$1" | sed -E "s^-fsanitize-blacklist=^^" )"; inc=1 ;;
+(-fsanitize-address-use-odr-indicator)   canonopt="-fsanitize-address-use-odr-indicator"; inc=1 ;;
+(-fsanitize-address-use-after-scope)   canonopt="-fsanitize-address-use-after-scope"; inc=1 ;;
+(-fsanitize-address-use-after-return=*) canonopt="-fsanitize-address-use-after-return"; optarg="$( echo "$1" | sed -E "s^-fsanitize-address-use-after-return=^^" )"; inc=1 ;;
+(-fsanitize-address-poison-custom-array-cookie)   canonopt="-fsanitize-address-poison-custom-array-cookie"; inc=1 ;;
+(-fsanitize-address-outline-instrumentation)   canonopt="-fsanitize-address-outline-instrumentation"; inc=1 ;;
+(-fsanitize-address-globals-dead-stripping)   canonopt="-fsanitize-address-globals-dead-stripping"; inc=1 ;;
+(-fsanitize-address-field-padding=*) canonopt="-fsanitize-address-field-padding"; optarg="$( echo "$1" | sed -E "s^-fsanitize-address-field-padding=^^" )"; inc=1 ;;
+(-fsanitize-address-destructor=*) canonopt="-fsanitize-address-destructor"; optarg="$( echo "$1" | sed -E "s^-fsanitize-address-destructor=^^" )"; inc=1 ;;
+(-frwpi)   canonopt="-frwpi"; inc=1 ;;
+(-frtti-data)   canonopt="-frtti-data"; inc=1 ;;
+(-frtti)   canonopt="-frtti"; inc=1 ;;
+(-frtlib-add-rpath)   canonopt="-frtlib-add-rpath"; inc=1 ;;
+(-fropi)   canonopt="-fropi"; inc=1 ;;
+(-frewrite-includes)   canonopt="-frewrite-includes"; inc=1 ;;
+(-frewrite-imports)   canonopt="-frewrite-imports"; inc=1 ;;
+(-freroll-loops)   canonopt="-freroll-loops"; inc=1 ;;
+(-frelaxed-template-template-args)   canonopt="-frelaxed-template-template-args"; inc=1 ;;
+(-fregister-global-dtors-with-atexit)   canonopt="-fregister-global-dtors-with-atexit"; inc=1 ;;
+(-freg-struct-return)   canonopt="-freg-struct-return"; inc=1 ;;
+(-frecovery-ast-type)   canonopt="-frecovery-ast-type"; inc=1 ;;
+(-frecovery-ast)   canonopt="-frecovery-ast"; inc=1 ;;
+(-freciprocal-math)   canonopt="-freciprocal-math"; inc=1 ;;
+(-fpseudo-probe-for-profiling)   canonopt="-fpseudo-probe-for-profiling"; inc=1 ;;
+(-fprotect-parens)   canonopt="-fprotect-parens"; inc=1 ;;
+(-fprofile-use=*) canonopt="-fprofile-use"; optarg="$( echo "$1" | sed -E "s^-fprofile-use=^^" )"; inc=1 ;;
+(-fprofile-update=*) canonopt="-fprofile-update"; optarg="$( echo "$1" | sed -E "s^-fprofile-update=^^" )"; inc=1 ;;
+(-fprofile-sample-use=*) canonopt="-fprofile-sample-use"; optarg="$( echo "$1" | sed -E "s^-fprofile-sample-use=^^" )"; inc=1 ;;
+(-fprofile-sample-accurate)   canonopt="-fprofile-sample-accurate"; inc=1 ;;
+(-fprofile-remapping-file=*) canonopt="-fprofile-remapping-file"; optarg="$( echo "$1" | sed -E "s^-fprofile-remapping-file=^^" )"; inc=1 ;;
+(-fprofile-list=*) canonopt="-fprofile-list"; optarg="$( echo "$1" | sed -E "s^-fprofile-list=^^" )"; inc=1 ;;
+(-fprofile-instrument=*) canonopt="-fprofile-instrument"; optarg="$( echo "$1" | sed -E "s^-fprofile-instrument=^^" )"; inc=1 ;;
+(-fprofile-instrument-use-path=*) canonopt="-fprofile-instrument-use-path"; optarg="$( echo "$1" | sed -E "s^-fprofile-instrument-use-path=^^" )"; inc=1 ;;
+(-fprofile-instrument-path=*) canonopt="-fprofile-instrument-path"; optarg="$( echo "$1" | sed -E "s^-fprofile-instrument-path=^^" )"; inc=1 ;;
+(-fprofile-instr-use=*) canonopt="-fprofile-instr-use"; optarg="$( echo "$1" | sed -E "s^-fprofile-instr-use=^^" )"; inc=1 ;;
+(-fprofile-instr-generate=*) canonopt="-fprofile-instr-generate"; optarg="$( echo "$1" | sed -E "s^-fprofile-instr-generate=^^" )"; inc=1 ;;
+(-fprofile-instr-generate)   canonopt="-fprofile-instr-generate"; inc=1 ;;
+(-fprofile-generate=*) canonopt="-fprofile-generate"; optarg="$( echo "$1" | sed -E "s^-fprofile-generate=^^" )"; inc=1 ;;
+(-fprofile-generate)   canonopt="-fprofile-generate"; inc=1 ;;
+(-fprofile-filter-files=*) canonopt="-fprofile-filter-files"; optarg="$( echo "$1" | sed -E "s^-fprofile-filter-files=^^" )"; inc=1 ;;
+(-fprofile-exclude-files=*) canonopt="-fprofile-exclude-files"; optarg="$( echo "$1" | sed -E "s^-fprofile-exclude-files=^^" )"; inc=1 ;;
+(-fprofile-arcs)   canonopt="-fprofile-arcs"; inc=1 ;;
+(-fproc-stat-report*) canonopt="-fproc-stat-report"; optarg="$( echo "$1" | sed -E "s^-fproc-stat-report^^" )"; inc=1 ;;
+(-fproc-stat-report=*) canonopt="-fproc-stat-report"; optarg="$( echo "$1" | sed -E "s^-fproc-stat-report=^^" )"; inc=1 ;;
+(-fpreserve-vec3-type)   canonopt="-fpreserve-vec3-type"; inc=1 ;;
+(-fpreserve-as-comments)   canonopt="-fpreserve-as-comments"; inc=1 ;;
+(-fprebuilt-module-path=*) canonopt="-fprebuilt-module-path"; optarg="$( echo "$1" | sed -E "s^-fprebuilt-module-path=^^" )"; inc=1 ;;
+(-fprebuilt-implicit-modules)   canonopt="-fprebuilt-implicit-modules"; inc=1 ;;
+(-fplugin=*) canonopt="-fplugin"; optarg="$( echo "$1" | sed -E "s^-fplugin=^^" )"; inc=1 ;;
+(-fplt)   canonopt="-fplt"; inc=1 ;;
+(-fpch-validate-input-files-content)   canonopt="-fpch-validate-input-files-content"; inc=1 ;;
+(-fpch-instantiate-templates)   canonopt="-fpch-instantiate-templates"; inc=1 ;;
+(-fpch-debuginfo)   canonopt="-fpch-debuginfo"; inc=1 ;;
+(-fpch-codegen)   canonopt="-fpch-codegen"; inc=1 ;;
+(-fpcc-struct-return)   canonopt="-fpcc-struct-return"; inc=1 ;;
+(-fpatchable-function-entry=*) canonopt="-fpatchable-function-entry"; optarg="$( echo "$1" | sed -E "s^-fpatchable-function-entry=^^" )"; inc=1 ;;
+(-fpatchable-function-entry-offset=*) canonopt="-fpatchable-function-entry-offset"; optarg="$( echo "$1" | sed -E "s^-fpatchable-function-entry-offset=^^" )"; inc=1 ;;
+(-fpass-plugin=*) canonopt="-fpass-plugin"; optarg="$( echo "$1" | sed -E "s^-fpass-plugin=^^" )"; inc=1 ;;
+(-fpass-by-value-is-noalias)   canonopt="-fpass-by-value-is-noalias"; inc=1 ;;
+(-fpascal-strings)   canonopt="-fpascal-strings"; inc=1 ;;
+(-fpadding-on-unsigned-fixed-point)   canonopt="-fpadding-on-unsigned-fixed-point"; inc=1 ;;
+(-fpack-struct=*) canonopt="-fpack-struct"; optarg="$( echo "$1" | sed -E "s^-fpack-struct=^^" )"; inc=1 ;;
+(-foverride-record-layout=*) canonopt="-foverride-record-layout"; optarg="$( echo "$1" | sed -E "s^-foverride-record-layout=^^" )"; inc=1 ;;
+(-forder-file-instrumentation)   canonopt="-forder-file-instrumentation"; inc=1 ;;
+(-foptimization-record-passes=*) canonopt="-foptimization-record-passes"; optarg="$( echo "$1" | sed -E "s^-foptimization-record-passes=^^" )"; inc=1 ;;
+(-foptimization-record-file=*) canonopt="-foptimization-record-file"; optarg="$( echo "$1" | sed -E "s^-foptimization-record-file=^^" )"; inc=1 ;;
+(-foperator-names)   canonopt="-foperator-names"; inc=1 ;;
+(-foperator-arrow-depth)  canonopt="-foperator-arrow-depth"; optarg="$2"; inc=2;;
+(-fopenmp-targets=*) canonopt="-fopenmp-targets"; optarg="$( echo "$1" | sed -E "s^-fopenmp-targets=^^" )"; inc=1 ;;
+(-fopenmp-target-new-runtime)   canonopt="-fopenmp-target-new-runtime"; inc=1 ;;
+(-fopenmp-simd)   canonopt="-fopenmp-simd"; inc=1 ;;
+(-fopenmp-optimistic-collapse)   canonopt="-fopenmp-optimistic-collapse"; inc=1 ;;
+(-fopenmp-is-device)   canonopt="-fopenmp-is-device"; inc=1 ;;
+(-fopenmp-host-ir-file-path)  canonopt="-fopenmp-host-ir-file-path"; optarg="$2"; inc=2;;
+(-fopenmp-enable-irbuilder)   canonopt="-fopenmp-enable-irbuilder"; inc=1 ;;
+(-fopenmp)   canonopt="-fopenmp"; inc=1 ;;
+(-foffload-lto=*) canonopt="-foffload-lto"; optarg="$( echo "$1" | sed -E "s^-foffload-lto=^^" )"; inc=1 ;;
+(-foffload-lto)   canonopt="-foffload-lto"; inc=1 ;;
+(-fobjc-weak)   canonopt="-fobjc-weak"; inc=1 ;;
+(-fobjc-subscripting-legacy-runtime)   canonopt="-fobjc-subscripting-legacy-runtime"; inc=1 ;;
+(-fobjc-runtime=*) canonopt="-fobjc-runtime"; optarg="$( echo "$1" | sed -E "s^-fobjc-runtime=^^" )"; inc=1 ;;
+(-fobjc-runtime-has-weak)   canonopt="-fobjc-runtime-has-weak"; inc=1 ;;
+(-fobjc-infer-related-result-type)   canonopt="-fobjc-infer-related-result-type"; inc=1 ;;
+(-fobjc-gc-only)   canonopt="-fobjc-gc-only"; inc=1 ;;
+(-fobjc-gc)   canonopt="-fobjc-gc"; inc=1 ;;
+(-fobjc-exceptions)   canonopt="-fobjc-exceptions"; inc=1 ;;
+(-fobjc-encode-cxx-class-template-spec)   canonopt="-fobjc-encode-cxx-class-template-spec"; inc=1 ;;
+(-fobjc-dispatch-method=*) canonopt="-fobjc-dispatch-method"; optarg="$( echo "$1" | sed -E "s^-fobjc-dispatch-method=^^" )"; inc=1 ;;
+(-fobjc-disable-direct-methods-for-testing)   canonopt="-fobjc-disable-direct-methods-for-testing"; inc=1 ;;
+(-fobjc-convert-messages-to-runtime-calls)   canonopt="-fobjc-convert-messages-to-runtime-calls"; inc=1 ;;
+(-fobjc-arc-exceptions)   canonopt="-fobjc-arc-exceptions"; inc=1 ;;
+(-fobjc-arc-cxxlib=*) canonopt="-fobjc-arc-cxxlib"; optarg="$( echo "$1" | sed -E "s^-fobjc-arc-cxxlib=^^" )"; inc=1 ;;
+(-fobjc-arc)   canonopt="-fobjc-arc"; inc=1 ;;
+(-fno-zvector)   canonopt="-fno-zvector"; inc=1 ;;
+(-fno-zero-initialized-in-bss)   canonopt="-fno-zero-initialized-in-bss"; inc=1 ;;
+(-fno-xray-instrument)   canonopt="-fno-xray-instrument"; inc=1 ;;
+(-fno-xray-ignore-loops)   canonopt="-fno-xray-ignore-loops"; inc=1 ;;
+(-fno-xray-function-index)   canonopt="-fno-xray-function-index"; inc=1 ;;
+(-fno-xray-always-emit-typedevents)   canonopt="-fno-xray-always-emit-typedevents"; inc=1 ;;
+(-fno-xray-always-emit-customevents)   canonopt="-fno-xray-always-emit-customevents"; inc=1 ;;
+(-fno-xl-pragma-pack)   canonopt="-fno-xl-pragma-pack"; inc=1 ;;
+(-fno-whole-program-vtables)   canonopt="-fno-whole-program-vtables"; inc=1 ;;
+(-fno-wchar)   canonopt="-fno-wchar"; inc=1 ;;
+(-fno-visibility-inlines-hidden-static-local-var)   canonopt="-fno-visibility-inlines-hidden-static-local-var"; inc=1 ;;
+(-fno-visibility-inlines-hidden)   canonopt="-fno-visibility-inlines-hidden"; inc=1 ;;
+(-fno-visibility-from-dllstorageclass)   canonopt="-fno-visibility-from-dllstorageclass"; inc=1 ;;
+(-fno-virtual-function-elimination)   canonopt="-fno-virtual-function-elimination"; inc=1 ;;
+(-fno-validate-pch)   canonopt="-fno-validate-pch"; inc=1 ;;
+(-fno-use-line-directives)   canonopt="-fno-use-line-directives"; inc=1 ;;
+(-fno-use-init-array)   canonopt="-fno-use-init-array"; inc=1 ;;
+(-fno-use-cxa-atexit)   canonopt="-fno-use-cxa-atexit"; inc=1 ;;
+(-fno-use-ctor-homing)   canonopt="-fno-use-ctor-homing"; inc=1 ;;
+(-fno-unroll-loops)   canonopt="-fno-unroll-loops"; inc=1 ;;
+(-fno-unique-section-names)   canonopt="-fno-unique-section-names"; inc=1 ;;
+(-fno-unique-internal-linkage-names)   canonopt="-fno-unique-internal-linkage-names"; inc=1 ;;
+(-fno-unique-basic-block-section-names)   canonopt="-fno-unique-basic-block-section-names"; inc=1 ;;
+(-fno-trigraphs)   canonopt="-fno-trigraphs"; inc=1 ;;
+(-fno-threadsafe-statics)   canonopt="-fno-threadsafe-statics"; inc=1 ;;
+(-fno-test-coverage)   canonopt="-fno-test-coverage"; inc=1 ;;
+(-fno-temp-file)   canonopt="-fno-temp-file"; inc=1 ;;
+(-fno-sycl)   canonopt="-fno-sycl"; inc=1 ;;
+(-fno-strict-vtable-pointers)   canonopt="-fno-strict-vtable-pointers"; inc=1 ;;
+(-fno-strict-return)   canonopt="-fno-strict-return"; inc=1 ;;
+(-fno-strict-float-cast-overflow)   canonopt="-fno-strict-float-cast-overflow"; inc=1 ;;
+(-fno-standalone-debug)   canonopt="-fno-standalone-debug"; inc=1 ;;
+(-fno-stack-size-section)   canonopt="-fno-stack-size-section"; inc=1 ;;
+(-fno-stack-protector)   canonopt="-fno-stack-protector"; inc=1 ;;
+(-fno-stack-clash-protection)   canonopt="-fno-stack-clash-protection"; inc=1 ;;
+(-fno-split-stack)   canonopt="-fno-split-stack"; inc=1 ;;
+(-fno-split-machine-functions)   canonopt="-fno-split-machine-functions"; inc=1 ;;
+(-fno-split-lto-unit)   canonopt="-fno-split-lto-unit"; inc=1 ;;
+(-fno-split-dwarf-inlining)   canonopt="-fno-split-dwarf-inlining"; inc=1 ;;
+(-fno-spell-checking)   canonopt="-fno-spell-checking"; inc=1 ;;
+(-fno-sized-deallocation)   canonopt="-fno-sized-deallocation"; inc=1 ;;
+(-fno-signed-zeros)   canonopt="-fno-signed-zeros"; inc=1 ;;
+(-fno-signed-wchar)   canonopt="-fno-signed-wchar"; inc=1 ;;
+(-fno-signed-char)   canonopt="-fno-signed-char"; inc=1 ;;
+(-fno-show-source-location)   canonopt="-fno-show-source-location"; inc=1 ;;
+(-fno-show-column)   canonopt="-fno-show-column"; inc=1 ;;
+(-fno-short-wchar)   canonopt="-fno-short-wchar"; inc=1 ;;
+(-fno-short-enums)   canonopt="-fno-short-enums"; inc=1 ;;
+(-fno-semantic-interposition)   canonopt="-fno-semantic-interposition"; inc=1 ;;
+(-fno-sanitize-trap=*) canonopt="-fno-sanitize-trap"; optarg="$( echo "$1" | sed -E "s^-fno-sanitize-trap=^^" )"; inc=1 ;;
+(-fno-sanitize-trap)   canonopt="-fno-sanitize-trap"; inc=1 ;;
+(-fno-sanitize-thread-memory-access)   canonopt="-fno-sanitize-thread-memory-access"; inc=1 ;;
+(-fno-sanitize-thread-func-entry-exit)   canonopt="-fno-sanitize-thread-func-entry-exit"; inc=1 ;;
+(-fno-sanitize-thread-atomics)   canonopt="-fno-sanitize-thread-atomics"; inc=1 ;;
+(-fno-sanitize-stats)   canonopt="-fno-sanitize-stats"; inc=1 ;;
+(-fno-sanitize-recover=*) canonopt="-fno-sanitize-recover"; optarg="$( echo "$1" | sed -E "s^-fno-sanitize-recover=^^" )"; inc=1 ;;
+(-fno-sanitize-minimal-runtime)   canonopt="-fno-sanitize-minimal-runtime"; inc=1 ;;
+(-fno-sanitize-memory-use-after-dtor)   canonopt="-fno-sanitize-memory-use-after-dtor"; inc=1 ;;
+(-fno-sanitize-memory-track-origins)   canonopt="-fno-sanitize-memory-track-origins"; inc=1 ;;
+(-fno-sanitize-ignorelist)   canonopt="-fno-sanitize-ignorelist"; inc=1 ;;
+(-fno-sanitize-hwaddress-experimental-aliasing)   canonopt="-fno-sanitize-hwaddress-experimental-aliasing"; inc=1 ;;
+(-fno-sanitize-coverage=*) canonopt="-fno-sanitize-coverage"; optarg="$( echo "$1" | sed -E "s^-fno-sanitize-coverage=^^" )"; inc=1 ;;
+(-fno-sanitize-cfi-cross-dso)   canonopt="-fno-sanitize-cfi-cross-dso"; inc=1 ;;
+(-fno-sanitize-cfi-canonical-jump-tables)   canonopt="-fno-sanitize-cfi-canonical-jump-tables"; inc=1 ;;
+(-fno-sanitize-address-use-odr-indicator)   canonopt="-fno-sanitize-address-use-odr-indicator"; inc=1 ;;
+(-fno-sanitize-address-use-after-scope)   canonopt="-fno-sanitize-address-use-after-scope"; inc=1 ;;
+(-fno-sanitize-address-poison-custom-array-cookie)   canonopt="-fno-sanitize-address-poison-custom-array-cookie"; inc=1 ;;
+(-fno-sanitize-address-outline-instrumentation)   canonopt="-fno-sanitize-address-outline-instrumentation"; inc=1 ;;
+(-fno-rwpi)   canonopt="-fno-rwpi"; inc=1 ;;
+(-fno-rtti-data)   canonopt="-fno-rtti-data"; inc=1 ;;
+(-fno-rtti)   canonopt="-fno-rtti"; inc=1 ;;
+(-fno-rtlib-add-rpath)   canonopt="-fno-rtlib-add-rpath"; inc=1 ;;
+(-fno-ropi)   canonopt="-fno-ropi"; inc=1 ;;
+(-fno-rewrite-includes)   canonopt="-fno-rewrite-includes"; inc=1 ;;
+(-fno-rewrite-imports)   canonopt="-fno-rewrite-imports"; inc=1 ;;
+(-fno-reroll-loops)   canonopt="-fno-reroll-loops"; inc=1 ;;
+(-fno-relaxed-template-template-args)   canonopt="-fno-relaxed-template-template-args"; inc=1 ;;
+(-fno-register-global-dtors-with-atexit)   canonopt="-fno-register-global-dtors-with-atexit"; inc=1 ;;
+(-fno-recovery-ast-type)   canonopt="-fno-recovery-ast-type"; inc=1 ;;
+(-fno-recovery-ast)   canonopt="-fno-recovery-ast"; inc=1 ;;
+(-fno-reciprocal-math)   canonopt="-fno-reciprocal-math"; inc=1 ;;
+(-fno-pseudo-probe-for-profiling)   canonopt="-fno-pseudo-probe-for-profiling"; inc=1 ;;
+(-fno-protect-parens)   canonopt="-fno-protect-parens"; inc=1 ;;
+(-fno-profile-instr-use)   canonopt="-fno-profile-instr-use"; inc=1 ;;
+(-fno-profile-instr-generate)   canonopt="-fno-profile-instr-generate"; inc=1 ;;
+(-fno-profile-generate)   canonopt="-fno-profile-generate"; inc=1 ;;
+(-fno-profile-arcs)   canonopt="-fno-profile-arcs"; inc=1 ;;
+(-fno-preserve-as-comments)   canonopt="-fno-preserve-as-comments"; inc=1 ;;
+(-fno-prebuilt-implicit-modules)   canonopt="-fno-prebuilt-implicit-modules"; inc=1 ;;
+(-fno-plt)   canonopt="-fno-plt"; inc=1 ;;
+(-fno-pch-timestamp)   canonopt="-fno-pch-timestamp"; inc=1 ;;
+(-fno-pch-instantiate-templates)   canonopt="-fno-pch-instantiate-templates"; inc=1 ;;
+(-fno-pch-debuginfo)   canonopt="-fno-pch-debuginfo"; inc=1 ;;
+(-fno-pch-codegen)   canonopt="-fno-pch-codegen"; inc=1 ;;
+(-fno-pascal-strings)   canonopt="-fno-pascal-strings"; inc=1 ;;
+(-fno-padding-on-unsigned-fixed-point)   canonopt="-fno-padding-on-unsigned-fixed-point"; inc=1 ;;
+(-fno-operator-names)   canonopt="-fno-operator-names"; inc=1 ;;
+(-fno-openmp-target-new-runtime)   canonopt="-fno-openmp-target-new-runtime"; inc=1 ;;
+(-fno-offload-lto)   canonopt="-fno-offload-lto"; inc=1 ;;
+(-fno-objc-infer-related-result-type)   canonopt="-fno-objc-infer-related-result-type"; inc=1 ;;
+(-fno-objc-exceptions)   canonopt="-fno-objc-exceptions"; inc=1 ;;
+(-fno-objc-encode-cxx-class-template-spec)   canonopt="-fno-objc-encode-cxx-class-template-spec"; inc=1 ;;
+(-fno-objc-convert-messages-to-runtime-calls)   canonopt="-fno-objc-convert-messages-to-runtime-calls"; inc=1 ;;
+(-fno-objc-arc-exceptions)   canonopt="-fno-objc-arc-exceptions"; inc=1 ;;
+(-fno-modules-validate-system-headers)   canonopt="-fno-modules-validate-system-headers"; inc=1 ;;
+(-fno-modules-search-all)   canonopt="-fno-modules-search-all"; inc=1 ;;
+(-fno-modules-global-index)   canonopt="-fno-modules-global-index"; inc=1 ;;
+(-fno-modules-error-recovery)   canonopt="-fno-modules-error-recovery"; inc=1 ;;
+(-fno-modules-decluse)   canonopt="-fno-modules-decluse"; inc=1 ;;
+(-fno-modules)   canonopt="-fno-modules"; inc=1 ;;
+(-fno-merge-all-constants)   canonopt="-fno-merge-all-constants"; inc=1 ;;
+(-fno-memory-profile)   canonopt="-fno-memory-profile"; inc=1 ;;
+(-fno-math-errno)   canonopt="-fno-math-errno"; inc=1 ;;
+(-fno-math-builtin)   canonopt="-fno-math-builtin"; inc=1 ;;
+(-fno-lto-unit)   canonopt="-fno-lto-unit"; inc=1 ;;
+(-fno-lto)   canonopt="-fno-lto"; inc=1 ;;
+(-fno-legacy-pass-manager)   canonopt="-fno-legacy-pass-manager"; inc=1 ;;
+(-fno-keep-static-consts)   canonopt="-fno-keep-static-consts"; inc=1 ;;
+(-fno-jump-tables)   canonopt="-fno-jump-tables"; inc=1 ;;
+(-fno-integrated-cc1)   canonopt="-fno-integrated-cc1"; inc=1 ;;
+(-fno-integrated-as)   canonopt="-fno-integrated-as"; inc=1 ;;
+(-fno-implicit-modules)   canonopt="-fno-implicit-modules"; inc=1 ;;
+(-fno-hip-new-launch-api)   canonopt="-fno-hip-new-launch-api"; inc=1 ;;
+(-fno-hip-fp32-correctly-rounded-divide-sqrt)   canonopt="-fno-hip-fp32-correctly-rounded-divide-sqrt"; inc=1 ;;
+(-fno-gpu-rdc)   canonopt="-fno-gpu-rdc"; inc=1 ;;
+(-fno-gpu-defer-diag)   canonopt="-fno-gpu-defer-diag"; inc=1 ;;
+(-fno-gpu-allow-device-init)   canonopt="-fno-gpu-allow-device-init"; inc=1 ;;
+(-fno-gnu89-inline)   canonopt="-fno-gnu89-inline"; inc=1 ;;
+(-fno-gnu-keywords)   canonopt="-fno-gnu-keywords"; inc=1 ;;
+(-fno-gnu-inline-asm)   canonopt="-fno-gnu-inline-asm"; inc=1 ;;
+(-fno-global-isel)   canonopt="-fno-global-isel"; inc=1 ;;
+(-fno-function-sections)   canonopt="-fno-function-sections"; inc=1 ;;
+(-fno-force-enable-int128)   canonopt="-fno-force-enable-int128"; inc=1 ;;
+(-fno-force-emit-vtables)   canonopt="-fno-force-emit-vtables"; inc=1 ;;
+(-fno-force-dwarf-frame)   canonopt="-fno-force-dwarf-frame"; inc=1 ;;
+(-fno-fixed-point)   canonopt="-fno-fixed-point"; inc=1 ;;
+(-fno-finite-math-only)   canonopt="-fno-finite-math-only"; inc=1 ;;
+(-fno-finite-loops)   canonopt="-fno-finite-loops"; inc=1 ;;
+(-fno-fine-grained-bitfield-accesses)   canonopt="-fno-fine-grained-bitfield-accesses"; inc=1 ;;
+(-fno-fast-math)   canonopt="-fno-fast-math"; inc=1 ;;
+(-fno-experimental-relative-c++-abi-vtables)   canonopt="-fno-experimental-relative-c++-abi-vtables"; inc=1 ;;
+(-fno-exceptions)   canonopt="-fno-exceptions"; inc=1 ;;
+(-fno-escaping-block-tail-calls)   canonopt="-fno-escaping-block-tail-calls"; inc=1 ;;
+(-fno-emulated-tls)   canonopt="-fno-emulated-tls"; inc=1 ;;
+(-fno-eliminate-unused-debug-types)   canonopt="-fno-eliminate-unused-debug-types"; inc=1 ;;
+(-fno-elide-type)   canonopt="-fno-elide-type"; inc=1 ;;
+(-fno-elide-constructors)   canonopt="-fno-elide-constructors"; inc=1 ;;
+(-fno-dwarf-directory-asm)   canonopt="-fno-dwarf-directory-asm"; inc=1 ;;
+(-fno-double-square-bracket-attributes)   canonopt="-fno-double-square-bracket-attributes"; inc=1 ;;
+(-fno-dollars-in-identifiers)   canonopt="-fno-dollars-in-identifiers"; inc=1 ;;
+(-fno-discard-value-names)   canonopt="-fno-discard-value-names"; inc=1 ;;
+(-fno-direct-access-external-data)   canonopt="-fno-direct-access-external-data"; inc=1 ;;
+(-fno-digraphs)   canonopt="-fno-digraphs"; inc=1 ;;
+(-fno-diagnostics-use-presumed-location)   canonopt="-fno-diagnostics-use-presumed-location"; inc=1 ;;
+(-fno-diagnostics-show-option)   canonopt="-fno-diagnostics-show-option"; inc=1 ;;
+(-fno-diagnostics-show-note-include-stack)   canonopt="-fno-diagnostics-show-note-include-stack"; inc=1 ;;
+(-fno-diagnostics-show-hotness)   canonopt="-fno-diagnostics-show-hotness"; inc=1 ;;
+(-fno-diagnostics-fixit-info)   canonopt="-fno-diagnostics-fixit-info"; inc=1 ;;
+(-fno-deprecated-macro)   canonopt="-fno-deprecated-macro"; inc=1 ;;
+(-fno-delete-null-pointer-checks)   canonopt="-fno-delete-null-pointer-checks"; inc=1 ;;
+(-fno-delayed-template-parsing)   canonopt="-fno-delayed-template-parsing"; inc=1 ;;
+(-fno-declspec)   canonopt="-fno-declspec"; inc=1 ;;
+(-fno-debug-ranges-base-address)   canonopt="-fno-debug-ranges-base-address"; inc=1 ;;
+(-fno-debug-pass-manager)   canonopt="-fno-debug-pass-manager"; inc=1 ;;
+(-fno-debug-macro)   canonopt="-fno-debug-macro"; inc=1 ;;
+(-fno-debug-info-for-profiling)   canonopt="-fno-debug-info-for-profiling"; inc=1 ;;
+(-fno-data-sections)   canonopt="-fno-data-sections"; inc=1 ;;
+(-fno-cxx-exceptions)   canonopt="-fno-cxx-exceptions"; inc=1 ;;
+(-fno-cuda-short-ptr)   canonopt="-fno-cuda-short-ptr"; inc=1 ;;
+(-fno-cuda-host-device-constexpr)   canonopt="-fno-cuda-host-device-constexpr"; inc=1 ;;
+(-fno-cuda-approx-transcendentals)   canonopt="-fno-cuda-approx-transcendentals"; inc=1 ;;
+(-fno-crash-diagnostics)   canonopt="-fno-crash-diagnostics"; inc=1 ;;
+(-fno-coverage-mapping)   canonopt="-fno-coverage-mapping"; inc=1 ;;
+(-fno-coroutines-ts)   canonopt="-fno-coroutines-ts"; inc=1 ;;
+(-fno-constant-cfstrings)   canonopt="-fno-constant-cfstrings"; inc=1 ;;
+(-fno-const-strings)   canonopt="-fno-const-strings"; inc=1 ;;
+(-fno-concept-satisfaction-caching)   canonopt="-fno-concept-satisfaction-caching"; inc=1 ;;
+(-fno-complete-member-pointers)   canonopt="-fno-complete-member-pointers"; inc=1 ;;
+(-fno-common)   canonopt="-fno-common"; inc=1 ;;
+(-fno-color-diagnostics)   canonopt="-fno-color-diagnostics"; inc=1 ;;
+(-fno-char8_t)   canonopt="-fno-char8_t"; inc=1 ;;
+(-fno-caret-diagnostics)   canonopt="-fno-caret-diagnostics"; inc=1 ;;
+(-fno-c++-static-destructors)   canonopt="-fno-c++-static-destructors"; inc=1 ;;
+(-fno-builtin-*) canonopt="-fno-builtin-"; optarg="$( echo "$1" | sed -E "s^-fno-builtin-^^" )"; inc=1 ;;
+(-fno-builtin)   canonopt="-fno-builtin"; inc=1 ;;
+(-fno-borland-extensions)   canonopt="-fno-borland-extensions"; inc=1 ;;
+(-fno-blocks)   canonopt="-fno-blocks"; inc=1 ;;
+(-fno-bitfield-type-align)   canonopt="-fno-bitfield-type-align"; inc=1 ;;
+(-fno-autolink)   canonopt="-fno-autolink"; inc=1 ;;
+(-fno-async-exceptions)   canonopt="-fno-async-exceptions"; inc=1 ;;
+(-fno-assume-sane-operator-new)   canonopt="-fno-assume-sane-operator-new"; inc=1 ;;
+(-fno-asm-blocks)   canonopt="-fno-asm-blocks"; inc=1 ;;
+(-fno-application-extension)   canonopt="-fno-application-extension"; inc=1 ;;
+(-fno-apple-pragma-pack)   canonopt="-fno-apple-pragma-pack"; inc=1 ;;
+(-fno-allow-editor-placeholders)   canonopt="-fno-allow-editor-placeholders"; inc=1 ;;
+(-fno-aligned-allocation)   canonopt="-fno-aligned-allocation"; inc=1 ;;
+(-fno-addrsig)   canonopt="-fno-addrsig"; inc=1 ;;
+(-fno-access-control)   canonopt="-fno-access-control"; inc=1 ;;
+(-fno-aapcs-bitfield-width)   canonopt="-fno-aapcs-bitfield-width"; inc=1 ;;
+(-fnew-alignment=*) canonopt="-fnew-alignment"; optarg="$( echo "$1" | sed -E "s^-fnew-alignment=^^" )"; inc=1 ;;
+(-fnative-half-type)   canonopt="-fnative-half-type"; inc=1 ;;
+(-fnative-half-arguments-and-returns)   canonopt="-fnative-half-arguments-and-returns"; inc=1 ;;
+(-fmsc-version=*) canonopt="-fmsc-version"; optarg="$( echo "$1" | sed -E "s^-fmsc-version=^^" )"; inc=1 ;;
+(-fms-extensions)   canonopt="-fms-extensions"; inc=1 ;;
+(-fms-compatibility-version=*) canonopt="-fms-compatibility-version"; optarg="$( echo "$1" | sed -E "s^-fms-compatibility-version=^^" )"; inc=1 ;;
+(-fms-compatibility)   canonopt="-fms-compatibility"; inc=1 ;;
+(-fmodules-validate-system-headers)   canonopt="-fmodules-validate-system-headers"; inc=1 ;;
+(-fmodules-validate-once-per-build-session)   canonopt="-fmodules-validate-once-per-build-session"; inc=1 ;;
+(-fmodules-validate-input-files-content)   canonopt="-fmodules-validate-input-files-content"; inc=1 ;;
+(-fmodules-user-build-path)  canonopt="-fmodules-user-build-path"; optarg="$2"; inc=2;;
+(-fmodules-ts)   canonopt="-fmodules-ts"; inc=1 ;;
+(-fmodules-strict-decluse)   canonopt="-fmodules-strict-decluse"; inc=1 ;;
+(-fmodules-strict-context-hash)   canonopt="-fmodules-strict-context-hash"; inc=1 ;;
+(-fmodules-search-all)   canonopt="-fmodules-search-all"; inc=1 ;;
+(-fmodules-prune-interval=*) canonopt="-fmodules-prune-interval"; optarg="$( echo "$1" | sed -E "s^-fmodules-prune-interval=^^" )"; inc=1 ;;
+(-fmodules-prune-after=*) canonopt="-fmodules-prune-after"; optarg="$( echo "$1" | sed -E "s^-fmodules-prune-after=^^" )"; inc=1 ;;
+(-fmodules-local-submodule-visibility)   canonopt="-fmodules-local-submodule-visibility"; inc=1 ;;
+(-fmodules-ignore-macro=*) canonopt="-fmodules-ignore-macro"; optarg="$( echo "$1" | sed -E "s^-fmodules-ignore-macro=^^" )"; inc=1 ;;
+(-fmodules-hash-content)   canonopt="-fmodules-hash-content"; inc=1 ;;
+(-fmodules-embed-file=*) canonopt="-fmodules-embed-file"; optarg="$( echo "$1" | sed -E "s^-fmodules-embed-file=^^" )"; inc=1 ;;
+(-fmodules-embed-all-files*) canonopt="-fmodules-embed-all-files"; optarg="$( echo "$1" | sed -E "s^-fmodules-embed-all-files^^" )"; inc=1 ;;
+(-fmodules-disable-diagnostic-validation)   canonopt="-fmodules-disable-diagnostic-validation"; inc=1 ;;
+(-fmodules-decluse)   canonopt="-fmodules-decluse"; inc=1 ;;
+(-fmodules-debuginfo)   canonopt="-fmodules-debuginfo"; inc=1 ;;
+(-fmodules-codegen)   canonopt="-fmodules-codegen"; inc=1 ;;
+(-fmodules-cache-path=*) canonopt="-fmodules-cache-path"; optarg="$( echo "$1" | sed -E "s^-fmodules-cache-path=^^" )"; inc=1 ;;
+(-fmodules)   canonopt="-fmodules"; inc=1 ;;
+(-fmodule-name=*) canonopt="-fmodule-name"; optarg="$( echo "$1" | sed -E "s^-fmodule-name=^^" )"; inc=1 ;;
+(-fmodule-map-file=*) canonopt="-fmodule-map-file"; optarg="$( echo "$1" | sed -E "s^-fmodule-map-file=^^" )"; inc=1 ;;
+(-fmodule-map-file-home-is-cwd)   canonopt="-fmodule-map-file-home-is-cwd"; inc=1 ;;
+(-fmodule-format=*) canonopt="-fmodule-format"; optarg="$( echo "$1" | sed -E "s^-fmodule-format=^^" )"; inc=1 ;;
+(-fmodule-file=*) canonopt="-fmodule-file"; optarg="$( echo "$1" | sed -E "s^-fmodule-file=^^" )"; inc=1 ;;
+(-fmodule-feature)  canonopt="-fmodule-feature"; optarg="$2"; inc=2;;
+(-fmessage-length=*) canonopt="-fmessage-length"; optarg="$( echo "$1" | sed -E "s^-fmessage-length=^^" )"; inc=1 ;;
+(-fmerge-functions)   canonopt="-fmerge-functions"; inc=1 ;;
+(-fmerge-all-constants)   canonopt="-fmerge-all-constants"; inc=1 ;;
+(-fmemory-profile=*) canonopt="-fmemory-profile"; optarg="$( echo "$1" | sed -E "s^-fmemory-profile=^^" )"; inc=1 ;;
+(-fmemory-profile)   canonopt="-fmemory-profile"; inc=1 ;;
+(-fmax-type-align=*) canonopt="-fmax-type-align"; optarg="$( echo "$1" | sed -E "s^-fmax-type-align=^^" )"; inc=1 ;;
+(-fmax-tokens=*) canonopt="-fmax-tokens"; optarg="$( echo "$1" | sed -E "s^-fmax-tokens=^^" )"; inc=1 ;;
+(-fmath-errno)   canonopt="-fmath-errno"; inc=1 ;;
+(-fmacro-prefix-map=*) canonopt="-fmacro-prefix-map"; optarg="$( echo "$1" | sed -E "s^-fmacro-prefix-map=^^" )"; inc=1 ;;
+(-fmacro-backtrace-limit)  canonopt="-fmacro-backtrace-limit"; optarg="$2"; inc=2;;
+(-flto=*) canonopt="-flto"; optarg="$( echo "$1" | sed -E "s^-flto=^^" )"; inc=1 ;;
+(-flto-visibility-public-std)   canonopt="-flto-visibility-public-std"; inc=1 ;;
+(-flto-unit)   canonopt="-flto-unit"; inc=1 ;;
+(-flto-jobs=*) canonopt="-flto-jobs"; optarg="$( echo "$1" | sed -E "s^-flto-jobs=^^" )"; inc=1 ;;
+(-flto)   canonopt="-flto"; inc=1 ;;
+(-flegacy-pass-manager)   canonopt="-flegacy-pass-manager"; inc=1 ;;
+(-flax-vector-conversions=*) canonopt="-flax-vector-conversions"; optarg="$( echo "$1" | sed -E "s^-flax-vector-conversions=^^" )"; inc=1 ;;
+(-fkeep-static-consts)   canonopt="-fkeep-static-consts"; inc=1 ;;
+(-fjump-tables)   canonopt="-fjump-tables"; inc=1 ;;
+(-fixit=*) canonopt="-fixit"; optarg="$( echo "$1" | sed -E "s^-fixit=^^" )"; inc=1 ;;
+(-fixit-to-temporary)   canonopt="-fixit-to-temporary"; inc=1 ;;
+(-fixit-recompile)   canonopt="-fixit-recompile"; inc=1 ;;
+(-fixit)   canonopt="-fixit"; inc=1 ;;
+(-fix-what-you-can)   canonopt="-fix-what-you-can"; inc=1 ;;
+(-fix-only-warnings)   canonopt="-fix-only-warnings"; inc=1 ;;
+(-fintegrated-cc1)   canonopt="-fintegrated-cc1"; inc=1 ;;
+(-fintegrated-as)   canonopt="-fintegrated-as"; inc=1 ;;
+(-finstrument-functions-after-inlining)   canonopt="-finstrument-functions-after-inlining"; inc=1 ;;
+(-finstrument-functions)   canonopt="-finstrument-functions"; inc=1 ;;
+(-finstrument-function-entry-bare)   canonopt="-finstrument-function-entry-bare"; inc=1 ;;
+(-finput-charset=*) canonopt="-finput-charset"; optarg="$( echo "$1" | sed -E "s^-finput-charset=^^" )"; inc=1 ;;
+(-finline-hint-functions)   canonopt="-finline-hint-functions"; inc=1 ;;
+(-finline-functions)   canonopt="-finline-functions"; inc=1 ;;
+(-finclude-default-header)   canonopt="-finclude-default-header"; inc=1 ;;
+(-fimplicit-modules)   canonopt="-fimplicit-modules"; inc=1 ;;
+(-fimplicit-module-maps)   canonopt="-fimplicit-module-maps"; inc=1 ;;
+(-fignore-exceptions)   canonopt="-fignore-exceptions"; inc=1 ;;
+(-fhip-new-launch-api)   canonopt="-fhip-new-launch-api"; inc=1 ;;
+(-fhip-fp32-correctly-rounded-divide-sqrt)   canonopt="-fhip-fp32-correctly-rounded-divide-sqrt"; inc=1 ;;
+(-fhalf-no-semantic-interposition)   canonopt="-fhalf-no-semantic-interposition"; inc=1 ;;
+(-fgpu-sanitize)   canonopt="-fgpu-sanitize"; inc=1 ;;
+(-fgpu-rdc)   canonopt="-fgpu-rdc"; inc=1 ;;
+(-fgpu-flush-denormals-to-zero)   canonopt="-fgpu-flush-denormals-to-zero"; inc=1 ;;
+(-fgpu-exclude-wrong-side-overloads)   canonopt="-fgpu-exclude-wrong-side-overloads"; inc=1 ;;
+(-fgpu-defer-diag)   canonopt="-fgpu-defer-diag"; inc=1 ;;
+(-fgpu-allow-device-init)   canonopt="-fgpu-allow-device-init"; inc=1 ;;
+(-fgnuc-version=*) canonopt="-fgnuc-version"; optarg="$( echo "$1" | sed -E "s^-fgnuc-version=^^" )"; inc=1 ;;
+(-fgnu89-inline)   canonopt="-fgnu89-inline"; inc=1 ;;
+(-fgnu-runtime)   canonopt="-fgnu-runtime"; inc=1 ;;
+(-fgnu-keywords)   canonopt="-fgnu-keywords"; inc=1 ;;
+(-fgnu-inline-asm)   canonopt="-fgnu-inline-asm"; inc=1 ;;
+(-fglobal-isel)   canonopt="-fglobal-isel"; inc=1 ;;
+(-ffunction-sections)   canonopt="-ffunction-sections"; inc=1 ;;
+(-ffreestanding)   canonopt="-ffreestanding"; inc=1 ;;
+(-ffp-model=*) canonopt="-ffp-model"; optarg="$( echo "$1" | sed -E "s^-ffp-model=^^" )"; inc=1 ;;
+(-ffp-exception-behavior=*) canonopt="-ffp-exception-behavior"; optarg="$( echo "$1" | sed -E "s^-ffp-exception-behavior=^^" )"; inc=1 ;;
+(-ffp-contract=*) canonopt="-ffp-contract"; optarg="$( echo "$1" | sed -E "s^-ffp-contract=^^" )"; inc=1 ;;
+(-fforce-enable-int128)   canonopt="-fforce-enable-int128"; inc=1 ;;
+(-fforce-emit-vtables)   canonopt="-fforce-emit-vtables"; inc=1 ;;
+(-fforce-dwarf-frame)   canonopt="-fforce-dwarf-frame"; inc=1 ;;
+(-fforbid-guard-variables)   canonopt="-fforbid-guard-variables"; inc=1 ;;
+(-ffixed-x9)   canonopt="-ffixed-x9"; inc=1 ;;
+(-ffixed-x8)   canonopt="-ffixed-x8"; inc=1 ;;
+(-ffixed-x7)   canonopt="-ffixed-x7"; inc=1 ;;
+(-ffixed-x6)   canonopt="-ffixed-x6"; inc=1 ;;
+(-ffixed-x5)   canonopt="-ffixed-x5"; inc=1 ;;
+(-ffixed-x4)   canonopt="-ffixed-x4"; inc=1 ;;
+(-ffixed-x31)   canonopt="-ffixed-x31"; inc=1 ;;
+(-ffixed-x30)   canonopt="-ffixed-x30"; inc=1 ;;
+(-ffixed-x3)   canonopt="-ffixed-x3"; inc=1 ;;
+(-ffixed-x29)   canonopt="-ffixed-x29"; inc=1 ;;
+(-ffixed-x28)   canonopt="-ffixed-x28"; inc=1 ;;
+(-ffixed-x27)   canonopt="-ffixed-x27"; inc=1 ;;
+(-ffixed-x26)   canonopt="-ffixed-x26"; inc=1 ;;
+(-ffixed-x25)   canonopt="-ffixed-x25"; inc=1 ;;
+(-ffixed-x24)   canonopt="-ffixed-x24"; inc=1 ;;
+(-ffixed-x23)   canonopt="-ffixed-x23"; inc=1 ;;
+(-ffixed-x22)   canonopt="-ffixed-x22"; inc=1 ;;
+(-ffixed-x21)   canonopt="-ffixed-x21"; inc=1 ;;
+(-ffixed-x20)   canonopt="-ffixed-x20"; inc=1 ;;
+(-ffixed-x2)   canonopt="-ffixed-x2"; inc=1 ;;
+(-ffixed-x19)   canonopt="-ffixed-x19"; inc=1 ;;
+(-ffixed-x18)   canonopt="-ffixed-x18"; inc=1 ;;
+(-ffixed-x17)   canonopt="-ffixed-x17"; inc=1 ;;
+(-ffixed-x16)   canonopt="-ffixed-x16"; inc=1 ;;
+(-ffixed-x15)   canonopt="-ffixed-x15"; inc=1 ;;
+(-ffixed-x14)   canonopt="-ffixed-x14"; inc=1 ;;
+(-ffixed-x13)   canonopt="-ffixed-x13"; inc=1 ;;
+(-ffixed-x12)   canonopt="-ffixed-x12"; inc=1 ;;
+(-ffixed-x11)   canonopt="-ffixed-x11"; inc=1 ;;
+(-ffixed-x10)   canonopt="-ffixed-x10"; inc=1 ;;
+(-ffixed-x1)   canonopt="-ffixed-x1"; inc=1 ;;
+(-ffixed-r9)   canonopt="-ffixed-r9"; inc=1 ;;
+(-ffixed-r19)   canonopt="-ffixed-r19"; inc=1 ;;
+(-ffixed-point)   canonopt="-ffixed-point"; inc=1 ;;
+(-ffixed-d7)   canonopt="-ffixed-d7"; inc=1 ;;
+(-ffixed-d6)   canonopt="-ffixed-d6"; inc=1 ;;
+(-ffixed-d5)   canonopt="-ffixed-d5"; inc=1 ;;
+(-ffixed-d4)   canonopt="-ffixed-d4"; inc=1 ;;
+(-ffixed-d3)   canonopt="-ffixed-d3"; inc=1 ;;
+(-ffixed-d2)   canonopt="-ffixed-d2"; inc=1 ;;
+(-ffixed-d1)   canonopt="-ffixed-d1"; inc=1 ;;
+(-ffixed-d0)   canonopt="-ffixed-d0"; inc=1 ;;
+(-ffixed-a6)   canonopt="-ffixed-a6"; inc=1 ;;
+(-ffixed-a5)   canonopt="-ffixed-a5"; inc=1 ;;
+(-ffixed-a4)   canonopt="-ffixed-a4"; inc=1 ;;
+(-ffixed-a3)   canonopt="-ffixed-a3"; inc=1 ;;
+(-ffixed-a2)   canonopt="-ffixed-a2"; inc=1 ;;
+(-ffixed-a1)   canonopt="-ffixed-a1"; inc=1 ;;
+(-ffixed-a0)   canonopt="-ffixed-a0"; inc=1 ;;
+(-ffinite-math-only)   canonopt="-ffinite-math-only"; inc=1 ;;
+(-ffinite-loops)   canonopt="-ffinite-loops"; inc=1 ;;
+(-ffine-grained-bitfield-accesses)   canonopt="-ffine-grained-bitfield-accesses"; inc=1 ;;
+(-ffile-prefix-map=*) canonopt="-ffile-prefix-map"; optarg="$( echo "$1" | sed -E "s^-ffile-prefix-map=^^" )"; inc=1 ;;
+(-ffile-compilation-dir=*) canonopt="-ffile-compilation-dir"; optarg="$( echo "$1" | sed -E "s^-ffile-compilation-dir=^^" )"; inc=1 ;;
+(-ffast-math)   canonopt="-ffast-math"; inc=1 ;;
+(-ffake-address-space-map)   canonopt="-ffake-address-space-map"; inc=1 ;;
+(-fexternc-nounwind)   canonopt="-fexternc-nounwind"; inc=1 ;;
+(-fextend-arguments=*) canonopt="-fextend-arguments"; optarg="$( echo "$1" | sed -E "s^-fextend-arguments=^^" )"; inc=1 ;;
+(-fexperimental-strict-floating-point)   canonopt="-fexperimental-strict-floating-point"; inc=1 ;;
+(-fexperimental-relative-c++-abi-vtables)   canonopt="-fexperimental-relative-c++-abi-vtables"; inc=1 ;;
+(-fexperimental-new-constant-interpreter)   canonopt="-fexperimental-new-constant-interpreter"; inc=1 ;;
+(-fexperimental-debug-variable-locations)   canonopt="-fexperimental-debug-variable-locations"; inc=1 ;;
+(-fexceptions)   canonopt="-fexceptions"; inc=1 ;;
+(-fescaping-block-tail-calls)   canonopt="-fescaping-block-tail-calls"; inc=1 ;;
+(-ferror-limit)  canonopt="-ferror-limit"; optarg="$2"; inc=2;;
+(-fencode-extended-block-signature)   canonopt="-fencode-extended-block-signature"; inc=1 ;;
+(-fenable-matrix)   canonopt="-fenable-matrix"; inc=1 ;;
+(-femulated-tls)   canonopt="-femulated-tls"; inc=1 ;;
+(-femit-all-decls)   canonopt="-femit-all-decls"; inc=1 ;;
+(-fembed-bitcode=*) canonopt="-fembed-bitcode"; optarg="$( echo "$1" | sed -E "s^-fembed-bitcode=^^" )"; inc=1 ;;
+(-fembed-bitcode-marker)   canonopt="-fembed-bitcode-marker"; inc=1 ;;
+(-fembed-bitcode)   canonopt="-fembed-bitcode"; inc=1 ;;
+(-feliminate-unused-debug-types)   canonopt="-feliminate-unused-debug-types"; inc=1 ;;
+(-felide-constructors)   canonopt="-felide-constructors"; inc=1 ;;
+(-fdwarf-exceptions)   canonopt="-fdwarf-exceptions"; inc=1 ;;
+(-fdwarf-directory-asm)   canonopt="-fdwarf-directory-asm"; inc=1 ;;
+(-fdump-vtable-layouts)   canonopt="-fdump-vtable-layouts"; inc=1 ;;
+(-fdump-record-layouts-simple)   canonopt="-fdump-record-layouts-simple"; inc=1 ;;
+(-fdump-record-layouts-complete)   canonopt="-fdump-record-layouts-complete"; inc=1 ;;
+(-fdump-record-layouts-canonical)   canonopt="-fdump-record-layouts-canonical"; inc=1 ;;
+(-fdump-record-layouts)   canonopt="-fdump-record-layouts"; inc=1 ;;
+(-fdouble-square-bracket-attributes)   canonopt="-fdouble-square-bracket-attributes"; inc=1 ;;
+(-fdollars-in-identifiers)   canonopt="-fdollars-in-identifiers"; inc=1 ;;
+(-fdiscard-value-names)   canonopt="-fdiscard-value-names"; inc=1 ;;
+(-fdisable-module-hash)   canonopt="-fdisable-module-hash"; inc=1 ;;
+(-fdirect-access-external-data)   canonopt="-fdirect-access-external-data"; inc=1 ;;
+(-fdigraphs)   canonopt="-fdigraphs"; inc=1 ;;
+(-fdiagnostics-show-template-tree)   canonopt="-fdiagnostics-show-template-tree"; inc=1 ;;
+(-fdiagnostics-show-option)   canonopt="-fdiagnostics-show-option"; inc=1 ;;
+(-fdiagnostics-show-note-include-stack)   canonopt="-fdiagnostics-show-note-include-stack"; inc=1 ;;
+(-fdiagnostics-show-hotness)   canonopt="-fdiagnostics-show-hotness"; inc=1 ;;
+(-fdiagnostics-show-category)  canonopt="-fdiagnostics-show-category"; optarg="$2"; inc=2;;
+(-fdiagnostics-print-source-range-info)   canonopt="-fdiagnostics-print-source-range-info"; inc=1 ;;
+(-fdiagnostics-parseable-fixits)   canonopt="-fdiagnostics-parseable-fixits"; inc=1 ;;
+(-fdiagnostics-hotness-threshold=*) canonopt="-fdiagnostics-hotness-threshold"; optarg="$( echo "$1" | sed -E "s^-fdiagnostics-hotness-threshold=^^" )"; inc=1 ;;
+(-fdiagnostics-format)  canonopt="-fdiagnostics-format"; optarg="$2"; inc=2;;
+(-fdiagnostics-absolute-paths)   canonopt="-fdiagnostics-absolute-paths"; inc=1 ;;
+(-fdeprecated-macro)   canonopt="-fdeprecated-macro"; inc=1 ;;
+(-fdelete-null-pointer-checks)   canonopt="-fdelete-null-pointer-checks"; inc=1 ;;
+(-fdelayed-template-parsing)   canonopt="-fdelayed-template-parsing"; inc=1 ;;
+(-fdefault-calling-conv=*) canonopt="-fdefault-calling-conv"; optarg="$( echo "$1" | sed -E "s^-fdefault-calling-conv=^^" )"; inc=1 ;;
+(-fdeclspec)   canonopt="-fdeclspec"; inc=1 ;;
+(-fdeclare-opencl-builtins)   canonopt="-fdeclare-opencl-builtins"; inc=1 ;;
+(-fdebugger-support)   canonopt="-fdebugger-support"; inc=1 ;;
+(-fdebugger-objc-literal)   canonopt="-fdebugger-objc-literal"; inc=1 ;;
+(-fdebugger-cast-result-to-id)   canonopt="-fdebugger-cast-result-to-id"; inc=1 ;;
+(-fdebug-types-section)   canonopt="-fdebug-types-section"; inc=1 ;;
+(-fdebug-ranges-base-address)   canonopt="-fdebug-ranges-base-address"; inc=1 ;;
+(-fdebug-prefix-map=*) canonopt="-fdebug-prefix-map"; optarg="$( echo "$1" | sed -E "s^-fdebug-prefix-map=^^" )"; inc=1 ;;
+(-fdebug-pass-manager)   canonopt="-fdebug-pass-manager"; inc=1 ;;
+(-fdebug-macro)   canonopt="-fdebug-macro"; inc=1 ;;
+(-fdebug-info-for-profiling)   canonopt="-fdebug-info-for-profiling"; inc=1 ;;
+(-fdebug-default-version=*) canonopt="-fdebug-default-version"; optarg="$( echo "$1" | sed -E "s^-fdebug-default-version=^^" )"; inc=1 ;;
+(-fdebug-compilation-dir=*) canonopt="-fdebug-compilation-dir"; optarg="$( echo "$1" | sed -E "s^-fdebug-compilation-dir=^^" )"; inc=1 ;;
+(-fdata-sections)   canonopt="-fdata-sections"; inc=1 ;;
+(-fcxx-exceptions)   canonopt="-fcxx-exceptions"; inc=1 ;;
+(-fcuda-short-ptr)   canonopt="-fcuda-short-ptr"; inc=1 ;;
+(-fcuda-is-device)   canonopt="-fcuda-is-device"; inc=1 ;;
+(-fcuda-include-gpubinary)  canonopt="-fcuda-include-gpubinary"; optarg="$2"; inc=2;;
+(-fcuda-approx-transcendentals)   canonopt="-fcuda-approx-transcendentals"; inc=1 ;;
+(-fcuda-allow-variadic-functions)   canonopt="-fcuda-allow-variadic-functions"; inc=1 ;;
+(-fcs-profile-generate=*) canonopt="-fcs-profile-generate"; optarg="$( echo "$1" | sed -E "s^-fcs-profile-generate=^^" )"; inc=1 ;;
+(-fcs-profile-generate)   canonopt="-fcs-profile-generate"; inc=1 ;;
+(-fcrash-diagnostics-dir=*) canonopt="-fcrash-diagnostics-dir"; optarg="$( echo "$1" | sed -E "s^-fcrash-diagnostics-dir=^^" )"; inc=1 ;;
+(-fcoverage-prefix-map=*) canonopt="-fcoverage-prefix-map"; optarg="$( echo "$1" | sed -E "s^-fcoverage-prefix-map=^^" )"; inc=1 ;;
+(-fcoverage-mapping)   canonopt="-fcoverage-mapping"; inc=1 ;;
+(-fcoverage-compilation-dir=*) canonopt="-fcoverage-compilation-dir"; optarg="$( echo "$1" | sed -E "s^-fcoverage-compilation-dir=^^" )"; inc=1 ;;
+(-fcoroutines-ts)   canonopt="-fcoroutines-ts"; inc=1 ;;
+(-fconvergent-functions)   canonopt="-fconvergent-functions"; inc=1 ;;
+(-fconstexpr-steps)  canonopt="-fconstexpr-steps"; optarg="$2"; inc=2;;
+(-fconstexpr-depth)  canonopt="-fconstexpr-depth"; optarg="$2"; inc=2;;
+(-fconstexpr-backtrace-limit)  canonopt="-fconstexpr-backtrace-limit"; optarg="$2"; inc=2;;
+(-fconstant-string-class)  canonopt="-fconstant-string-class"; optarg="$2"; inc=2;;
+(-fconstant-cfstrings)   canonopt="-fconstant-cfstrings"; inc=1 ;;
+(-fconst-strings)   canonopt="-fconst-strings"; inc=1 ;;
+(-fconcepts-ts)   canonopt="-fconcepts-ts"; inc=1 ;;
+(-fcomplete-member-pointers)   canonopt="-fcomplete-member-pointers"; inc=1 ;;
+(-fcompatibility-qualified-id-block-type-checking)   canonopt="-fcompatibility-qualified-id-block-type-checking"; inc=1 ;;
+(-fcommon)   canonopt="-fcommon"; inc=1 ;;
+(-fcomment-block-commands=*) canonopt="-fcomment-block-commands"; optarg="$( echo "$1" | sed -E "s^-fcomment-block-commands=^^" )"; inc=1 ;;
+(-fcolor-diagnostics)   canonopt="-fcolor-diagnostics"; inc=1 ;;
+(-fclang-abi-compat=*) canonopt="-fclang-abi-compat"; optarg="$( echo "$1" | sed -E "s^-fclang-abi-compat=^^" )"; inc=1 ;;
+(-fchar8_t)   canonopt="-fchar8_t"; inc=1 ;;
+(-fcf-protection=*) canonopt="-fcf-protection"; optarg="$( echo "$1" | sed -E "s^-fcf-protection=^^" )"; inc=1 ;;
+(-fcf-protection)   canonopt="-fcf-protection"; inc=1 ;;
+(-fcaret-diagnostics-max-lines)  canonopt="-fcaret-diagnostics-max-lines"; optarg="$2"; inc=2;;
+(-fcaret-diagnostics)   canonopt="-fcaret-diagnostics"; inc=1 ;;
+(-fcall-saved-x9)   canonopt="-fcall-saved-x9"; inc=1 ;;
+(-fcall-saved-x8)   canonopt="-fcall-saved-x8"; inc=1 ;;
+(-fcall-saved-x18)   canonopt="-fcall-saved-x18"; inc=1 ;;
+(-fcall-saved-x15)   canonopt="-fcall-saved-x15"; inc=1 ;;
+(-fcall-saved-x14)   canonopt="-fcall-saved-x14"; inc=1 ;;
+(-fcall-saved-x13)   canonopt="-fcall-saved-x13"; inc=1 ;;
+(-fcall-saved-x12)   canonopt="-fcall-saved-x12"; inc=1 ;;
+(-fcall-saved-x11)   canonopt="-fcall-saved-x11"; inc=1 ;;
+(-fcall-saved-x10)   canonopt="-fcall-saved-x10"; inc=1 ;;
+(-fc++-static-destructors)   canonopt="-fc++-static-destructors"; inc=1 ;;
+(-fc++-abi=*) canonopt="-fc++-abi"; optarg="$( echo "$1" | sed -E "s^-fc++-abi=^^" )"; inc=1 ;;
+(-fbuiltin-module-map)   canonopt="-fbuiltin-module-map"; inc=1 ;;
+(-fbuild-session-timestamp=*) canonopt="-fbuild-session-timestamp"; optarg="$( echo "$1" | sed -E "s^-fbuild-session-timestamp=^^" )"; inc=1 ;;
+(-fbuild-session-file=*) canonopt="-fbuild-session-file"; optarg="$( echo "$1" | sed -E "s^-fbuild-session-file=^^" )"; inc=1 ;;
+(-fbracket-depth)  canonopt="-fbracket-depth"; optarg="$2"; inc=2;;
+(-fborland-extensions)   canonopt="-fborland-extensions"; inc=1 ;;
+(-fblocks-runtime-optional)   canonopt="-fblocks-runtime-optional"; inc=1 ;;
+(-fblocks)   canonopt="-fblocks"; inc=1 ;;
+(-fbinutils-version=*) canonopt="-fbinutils-version"; optarg="$( echo "$1" | sed -E "s^-fbinutils-version=^^" )"; inc=1 ;;
+(-fbasic-block-sections=*) canonopt="-fbasic-block-sections"; optarg="$( echo "$1" | sed -E "s^-fbasic-block-sections=^^" )"; inc=1 ;;
+(-fautolink)   canonopt="-fautolink"; inc=1 ;;
+(-fasync-exceptions)   canonopt="-fasync-exceptions"; inc=1 ;;
+(-fasm-blocks)   canonopt="-fasm-blocks"; inc=1 ;;
+(-fapply-global-visibility-to-externs)   canonopt="-fapply-global-visibility-to-externs"; inc=1 ;;
+(-fapplication-extension)   canonopt="-fapplication-extension"; inc=1 ;;
+(-fapple-pragma-pack)   canonopt="-fapple-pragma-pack"; inc=1 ;;
+(-fapple-link-rtlib)   canonopt="-fapple-link-rtlib"; inc=1 ;;
+(-fapple-kext)   canonopt="-fapple-kext"; inc=1 ;;
+(-fansi-escape-codes)   canonopt="-fansi-escape-codes"; inc=1 ;;
+(-faltivec-src-compat=*) canonopt="-faltivec-src-compat"; optarg="$( echo "$1" | sed -E "s^-faltivec-src-compat=^^" )"; inc=1 ;;
+(-fallow-pcm-with-compiler-errors)   canonopt="-fallow-pcm-with-compiler-errors"; inc=1 ;;
+(-fallow-pch-with-different-modules-cache-path)   canonopt="-fallow-pch-with-different-modules-cache-path"; inc=1 ;;
+(-fallow-pch-with-compiler-errors)   canonopt="-fallow-pch-with-compiler-errors"; inc=1 ;;
+(-fallow-half-arguments-and-returns)   canonopt="-fallow-half-arguments-and-returns"; inc=1 ;;
+(-fallow-editor-placeholders)   canonopt="-fallow-editor-placeholders"; inc=1 ;;
+(-faligned-allocation)   canonopt="-faligned-allocation"; inc=1 ;;
+(-faligned-alloc-unavailable)   canonopt="-faligned-alloc-unavailable"; inc=1 ;;
+(-faddrsig)   canonopt="-faddrsig"; inc=1 ;;
+(-faddress-space-map-mangling=*) canonopt="-faddress-space-map-mangling"; optarg="$( echo "$1" | sed -E "s^-faddress-space-map-mangling=^^" )"; inc=1 ;;
+(-faccess-control)   canonopt="-faccess-control"; inc=1 ;;
+(-faapcs-bitfield-width)   canonopt="-faapcs-bitfield-width"; inc=1 ;;
+(-faapcs-bitfield-load)   canonopt="-faapcs-bitfield-load"; inc=1 ;;
+(-exception-model)  canonopt="-exception-model"; optarg="$2"; inc=2;;
+(-error-on-deserialized-decl)  canonopt="-error-on-deserialized-decl"; optarg="$2"; inc=2;;
+(-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang)   canonopt="-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang"; inc=1 ;;
+(-enable-noundef-analysis)   canonopt="-enable-noundef-analysis"; inc=1 ;;
+(-emit-pch)   canonopt="-emit-pch"; inc=1 ;;
+(-emit-obj)   canonopt="-emit-obj"; inc=1 ;;
+(-emit-module-interface)   canonopt="-emit-module-interface"; inc=1 ;;
+(-emit-module)   canonopt="-emit-module"; inc=1 ;;
+(-emit-merged-ifs)   canonopt="-emit-merged-ifs"; inc=1 ;;
+(-emit-llvm-uselists)   canonopt="-emit-llvm-uselists"; inc=1 ;;
+(-emit-llvm-only)   canonopt="-emit-llvm-only"; inc=1 ;;
+(-emit-llvm-bc)   canonopt="-emit-llvm-bc"; inc=1 ;;
+(-emit-llvm)   canonopt="-emit-llvm"; inc=1 ;;
+(-emit-interface-stubs)   canonopt="-emit-interface-stubs"; inc=1 ;;
+(-emit-html)   canonopt="-emit-html"; inc=1 ;;
+(-emit-header-module)   canonopt="-emit-header-module"; inc=1 ;;
+(-emit-codegen-only)   canonopt="-emit-codegen-only"; inc=1 ;;
+(-emit-ast)   canonopt="-emit-ast"; inc=1 ;;
+(-ehcontguard)   canonopt="-ehcontguard"; inc=1 ;;
+(-dwarf-ext-refs)   canonopt="-dwarf-ext-refs"; inc=1 ;;
+(-dwarf-explicit-import)   canonopt="-dwarf-explicit-import"; inc=1 ;;
+(-dwarf-debug-flags)  canonopt="-dwarf-debug-flags"; optarg="$2"; inc=2;;
+(-dump-tokens)   canonopt="-dump-tokens"; inc=1 ;;
+(-dump-raw-tokens)   canonopt="-dump-raw-tokens"; inc=1 ;;
+(-dump-deserialized-decls)   canonopt="-dump-deserialized-decls"; inc=1 ;;
+(-dump-coverage-mapping)   canonopt="-dump-coverage-mapping"; inc=1 ;;
+(-dsym-dir)  canonopt="-dsym-dir"; optarg="$2"; inc=2;;
+(-discard-value-names)   canonopt="-discard-value-names"; inc=1 ;;
+(-disable-red-zone)   canonopt="-disable-red-zone"; inc=1 ;;
+(-disable-pragma-debug-crash)   canonopt="-disable-pragma-debug-crash"; inc=1 ;;
+(-disable-objc-default-synthesize-properties)   canonopt="-disable-objc-default-synthesize-properties"; inc=1 ;;
+(-disable-llvm-verifier)   canonopt="-disable-llvm-verifier"; inc=1 ;;
+(-disable-llvm-passes)   canonopt="-disable-llvm-passes"; inc=1 ;;
+(-disable-lifetime-markers)   canonopt="-disable-lifetime-markers"; inc=1 ;;
+(-disable-free)   canonopt="-disable-free"; inc=1 ;;
+(-disable-O0-optnone)   canonopt="-disable-O0-optnone"; inc=1 ;;
+(-diagnostic-log-file)  canonopt="-diagnostic-log-file"; optarg="$2"; inc=2;;
+(-detailed-preprocessing-record)   canonopt="-detailed-preprocessing-record"; inc=1 ;;
+(-dependency-file)  canonopt="-dependency-file"; optarg="$2"; inc=2;;
+(-dependency-dot)  canonopt="-dependency-dot"; optarg="$2"; inc=2;;
+(-default-function-attr)  canonopt="-default-function-attr"; optarg="$2"; inc=2;;
+(-debug-info-macro)   canonopt="-debug-info-macro"; inc=1 ;;
+(-debug-forward-template-params)   canonopt="-debug-forward-template-params"; inc=1 ;;
+(-dM)   canonopt="-dM"; inc=1 ;;
+(-dI)   canonopt="-dI"; inc=1 ;;
+(-dD)   canonopt="-dD"; inc=1 ;;
+(-cxx-isystem)  canonopt="-cxx-isystem"; optarg="$2"; inc=2;;
+(-cuid=*) canonopt="-cuid"; optarg="$( echo "$1" | sed -E "s^-cuid=^^" )"; inc=1 ;;
+(-coverage-version=*) canonopt="-coverage-version"; optarg="$( echo "$1" | sed -E "s^-coverage-version=^^" )"; inc=1 ;;
+(-coverage-notes-file)  canonopt="-coverage-notes-file"; optarg="$2"; inc=2;;
+(-coverage-data-file)  canonopt="-coverage-data-file"; optarg="$2"; inc=2;;
+(-compress-debug-sections=*) canonopt="-compress-debug-sections"; optarg="$( echo "$1" | sed -E "s^-compress-debug-sections=^^" )"; inc=1 ;;
+(-compiler-options-dump)   canonopt="-compiler-options-dump"; inc=1 ;;
+(-code-completion-with-fixits)   canonopt="-code-completion-with-fixits"; inc=1 ;;
+(-code-completion-patterns)   canonopt="-code-completion-patterns"; inc=1 ;;
+(-code-completion-macros)   canonopt="-code-completion-macros"; inc=1 ;;
+(-code-completion-brief-comments)   canonopt="-code-completion-brief-comments"; inc=1 ;;
+(-code-completion-at)  canonopt="-code-completion-at"; optarg="$2"; inc=2;;
+(-cl-unsafe-math-optimizations)   canonopt="-cl-unsafe-math-optimizations"; inc=1 ;;
+(-cl-uniform-work-group-size)   canonopt="-cl-uniform-work-group-size"; inc=1 ;;
+(-cl-strict-aliasing)   canonopt="-cl-strict-aliasing"; inc=1 ;;
+(-cl-std=*) canonopt="-cl-std"; optarg="$( echo "$1" | sed -E "s^-cl-std=^^" )"; inc=1 ;;
+(-cl-single-precision-constant)   canonopt="-cl-single-precision-constant"; inc=1 ;;
+(-cl-opt-disable)   canonopt="-cl-opt-disable"; inc=1 ;;
+(-cl-no-stdinc)   canonopt="-cl-no-stdinc"; inc=1 ;;
+(-cl-no-signed-zeros)   canonopt="-cl-no-signed-zeros"; inc=1 ;;
+(-cl-mad-enable)   canonopt="-cl-mad-enable"; inc=1 ;;
+(-cl-kernel-arg-info)   canonopt="-cl-kernel-arg-info"; inc=1 ;;
+(-cl-fp32-correctly-rounded-divide-sqrt)   canonopt="-cl-fp32-correctly-rounded-divide-sqrt"; inc=1 ;;
+(-cl-finite-math-only)   canonopt="-cl-finite-math-only"; inc=1 ;;
+(-cl-fast-relaxed-math)   canonopt="-cl-fast-relaxed-math"; inc=1 ;;
+(-cl-ext=*) canonopt="-cl-ext"; optarg="$( echo "$1" | sed -E "s^-cl-ext=^^" )"; inc=1 ;;
+(-cl-denorms-are-zero)   canonopt="-cl-denorms-are-zero"; inc=1 ;;
+(-chain-include)  canonopt="-chain-include"; optarg="$2"; inc=2;;
+(-cfguard-no-checks)   canonopt="-cfguard-no-checks"; inc=1 ;;
+(-cfguard)   canonopt="-cfguard"; inc=1 ;;
+(-cfg-add-implicit-dtors)   canonopt="-cfg-add-implicit-dtors"; inc=1 ;;
+(-c-isystem)  canonopt="-c-isystem"; optarg="$2"; inc=2;;
+(-c)   canonopt="-c"; inc=1 ;;
+(-building-pch-with-obj)   canonopt="-building-pch-with-obj"; inc=1 ;;
+(-aux-triple)  canonopt="-aux-triple"; optarg="$2"; inc=2;;
+(-aux-target-feature)  canonopt="-aux-target-feature"; optarg="$2"; inc=2;;
+(-aux-target-cpu)  canonopt="-aux-target-cpu"; optarg="$2"; inc=2;;
+(-ast-view)   canonopt="-ast-view"; inc=1 ;;
+(-ast-print)   canonopt="-ast-print"; inc=1 ;;
+(-ast-merge)  canonopt="-ast-merge"; optarg="$2"; inc=2;;
+(-ast-list)   canonopt="-ast-list"; inc=1 ;;
+(-ast-dump=*) canonopt="-ast-dump"; optarg="$( echo "$1" | sed -E "s^-ast-dump=^^" )"; inc=1 ;;
+(-ast-dump-lookups)   canonopt="-ast-dump-lookups"; inc=1 ;;
+(-ast-dump-filter)  canonopt="-ast-dump-filter"; optarg="$2"; inc=2;;
+(-ast-dump-decl-types)   canonopt="-ast-dump-decl-types"; inc=1 ;;
+(-ast-dump-all=*) canonopt="-ast-dump-all"; optarg="$( echo "$1" | sed -E "s^-ast-dump-all=^^" )"; inc=1 ;;
+(-ast-dump-all)   canonopt="-ast-dump-all"; inc=1 ;;
+(-ast-dump)   canonopt="-ast-dump"; inc=1 ;;
+(-arcmt-migrate-report-output)  canonopt="-arcmt-migrate-report-output"; optarg="$2"; inc=2;;
+(-arcmt-migrate-emit-errors)   canonopt="-arcmt-migrate-emit-errors"; inc=1 ;;
+(-arcmt-action=*) canonopt="-arcmt-action"; optarg="$( echo "$1" | sed -E "s^-arcmt-action=^^" )"; inc=1 ;;
+(-analyzer-werror)   canonopt="-analyzer-werror"; inc=1 ;;
+(-analyzer-viz-egraph-graphviz)   canonopt="-analyzer-viz-egraph-graphviz"; inc=1 ;;
+(-analyzer-store)  canonopt="-analyzer-store"; optarg="$2"; inc=2;;
+(-analyzer-stats)   canonopt="-analyzer-stats"; inc=1 ;;
+(-analyzer-purge)  canonopt="-analyzer-purge"; optarg="$2"; inc=2;;
+(-analyzer-output)  canonopt="-analyzer-output"; optarg="$2"; inc=2;;
+(-analyzer-opt-analyze-nested-blocks)   canonopt="-analyzer-opt-analyze-nested-blocks"; inc=1 ;;
+(-analyzer-opt-analyze-headers)   canonopt="-analyzer-opt-analyze-headers"; inc=1 ;;
+(-analyzer-max-loop)  canonopt="-analyzer-max-loop"; optarg="$2"; inc=2;;
+(-analyzer-list-enabled-checkers)   canonopt="-analyzer-list-enabled-checkers"; inc=1 ;;
+(-analyzer-inlining-mode)  canonopt="-analyzer-inlining-mode"; optarg="$2"; inc=2;;
+(-analyzer-inline-max-stack-depth)  canonopt="-analyzer-inline-max-stack-depth"; optarg="$2"; inc=2;;
+(-analyzer-dump-egraph)  canonopt="-analyzer-dump-egraph"; optarg="$2"; inc=2;;
+(-analyzer-display-progress)   canonopt="-analyzer-display-progress"; inc=1 ;;
+(-analyzer-disable-retry-exhausted)   canonopt="-analyzer-disable-retry-exhausted"; inc=1 ;;
+(-analyzer-disable-checker)  canonopt="-analyzer-disable-checker"; optarg="$2"; inc=2;;
+(-analyzer-disable-all-checks)   canonopt="-analyzer-disable-all-checks"; inc=1 ;;
+(-analyzer-constraints)  canonopt="-analyzer-constraints"; optarg="$2"; inc=2;;
+(-analyzer-config)  canonopt="-analyzer-config"; optarg="$2"; inc=2;;
+(-analyzer-config-help)   canonopt="-analyzer-config-help"; inc=1 ;;
+(-analyzer-config-compatibility-mode)  canonopt="-analyzer-config-compatibility-mode"; optarg="$2"; inc=2;;
+(-analyzer-checker)  canonopt="-analyzer-checker"; optarg="$2"; inc=2;;
+(-analyzer-checker-option-help-developer)   canonopt="-analyzer-checker-option-help-developer"; inc=1 ;;
+(-analyzer-checker-option-help-alpha)   canonopt="-analyzer-checker-option-help-alpha"; inc=1 ;;
+(-analyzer-checker-option-help)   canonopt="-analyzer-checker-option-help"; inc=1 ;;
+(-analyzer-checker-help-developer)   canonopt="-analyzer-checker-help-developer"; inc=1 ;;
+(-analyzer-checker-help-alpha)   canonopt="-analyzer-checker-help-alpha"; inc=1 ;;
+(-analyzer-checker-help)   canonopt="-analyzer-checker-help"; inc=1 ;;
+(-analyze-function)  canonopt="-analyze-function"; optarg="$2"; inc=2;;
+(-analyze)   canonopt="-analyze"; inc=1 ;;
+(-add-plugin)  canonopt="-add-plugin"; optarg="$2"; inc=2;;
+(-Xpreprocessor)  canonopt="-Xpreprocessor"; optarg="$2"; inc=2;;
+(-Xopenmp-target)  canonopt="-Xopenmp-target"; optarg="$2"; inc=2;;
+(-Xopenmp-target=*) canonopt="-Xopenmp-target"; optarg="$( echo "$1" | sed -E "s^-Xopenmp-target=^^" )"; inc=1 ;;
+(-Xlinker)  canonopt="-Xlinker"; optarg="$2"; inc=2;;
+(-Xcuda-ptxas)  canonopt="-Xcuda-ptxas"; optarg="$2"; inc=2;;
+(-Xcuda-fatbinary)  canonopt="-Xcuda-fatbinary"; optarg="$2"; inc=2;;
+(-Xclang)  canonopt="-Xclang"; optarg="$2"; inc=2;;
+(-Xassembler)  canonopt="-Xassembler"; optarg="$2"; inc=2;;
+(-Xarch_host)  canonopt="-Xarch_host"; optarg="$2"; inc=2;;
+(-Xarch_device)  canonopt="-Xarch_device"; optarg="$2"; inc=2;;
+(-Xanalyzer)  canonopt="-Xanalyzer"; optarg="$2"; inc=2;;
+(-Wundef-prefix=*) canonopt="-Wundef-prefix"; optarg="$( echo "$1" | sed -E "s^-Wundef-prefix=^^" )"; inc=1 ;;
+(-Wp,*) canonopt="-Wp,"; optarg="$( echo "$1" | sed -E "s^-Wp,^^" )"; inc=1 ;;
+(-Wno-rewrite-macros)   canonopt="-Wno-rewrite-macros"; inc=1 ;;
+(-Wl,*) canonopt="-Wl,"; optarg="$( echo "$1" | sed -E "s^-Wl,^^" )"; inc=1 ;;
+(-Wdeprecated)   canonopt="-Wdeprecated"; inc=1 ;;
+(-Wa,*) canonopt="-Wa,"; optarg="$( echo "$1" | sed -E "s^-Wa,^^" )"; inc=1 ;;
+(-W*) canonopt="-W"; optarg="$( echo "$1" | sed -E "s^-W^^" )"; inc=1 ;;
+(-U)  canonopt="-U"; optarg="$2"; inc=2;;
+(-Ttext)  canonopt="-Ttext"; optarg="$2"; inc=2;;
+(-Tdata)  canonopt="-Tdata"; optarg="$2"; inc=2;;
+(-Tbss)  canonopt="-Tbss"; optarg="$2"; inc=2;;
+(-T)  canonopt="-T"; optarg="$2"; inc=2;;
+(-S)   canonopt="-S"; inc=1 ;;
+(-Rpass=*) canonopt="-Rpass"; optarg="$( echo "$1" | sed -E "s^-Rpass=^^" )"; inc=1 ;;
+(-Rpass-missed=*) canonopt="-Rpass-missed"; optarg="$( echo "$1" | sed -E "s^-Rpass-missed=^^" )"; inc=1 ;;
+(-Rpass-analysis=*) canonopt="-Rpass-analysis"; optarg="$( echo "$1" | sed -E "s^-Rpass-analysis=^^" )"; inc=1 ;;
+(-R*) canonopt="-R"; optarg="$( echo "$1" | sed -E "s^-R^^" )"; inc=1 ;;
+(-Qy)   canonopt="-Qy"; inc=1 ;;
+(-Qunused-arguments)   canonopt="-Qunused-arguments"; inc=1 ;;
+(-Qn)   canonopt="-Qn"; inc=1 ;;
+(-P)   canonopt="-P"; inc=1 ;;
+(-ObjC++)   canonopt="-ObjC++"; inc=1 ;;
+(-ObjC)   canonopt="-ObjC"; inc=1 ;;
+(-MV)   canonopt="-MV"; inc=1 ;;
+(-MT)  canonopt="-MT"; optarg="$2"; inc=2;;
+(-MQ)  canonopt="-MQ"; optarg="$2"; inc=2;;
+(-MP)   canonopt="-MP"; inc=1 ;;
+(-MMD)   canonopt="-MMD"; inc=1 ;;
+(-MM)   canonopt="-MM"; inc=1 ;;
+(-MJ)  canonopt="-MJ"; optarg="$2"; inc=2;;
+(-MG)   canonopt="-MG"; inc=1 ;;
+(-MF)  canonopt="-MF"; optarg="$2"; inc=2;;
+(-MD)   canonopt="-MD"; inc=1 ;;
+(-M)   canonopt="-M"; inc=1 ;;
+(-L)  canonopt="-L"; optarg="$2"; inc=2;;
+(-I)  canonopt="-I"; optarg="$2"; inc=2;;
+(-I-)   canonopt="-I-"; inc=1 ;;
+(-H)   canonopt="-H"; inc=1 ;;
+(-G)  canonopt="-G"; optarg="$2"; inc=2;;
+(-F)  canonopt="-F"; optarg="$2"; inc=2;;
+(-Eonly)   canonopt="-Eonly"; inc=1 ;;
+(-E)   canonopt="-E"; inc=1 ;;
+(-D)  canonopt="-D"; optarg="$2"; inc=2;;
+(-CC)   canonopt="-CC"; inc=1 ;;
+(-C)   canonopt="-C"; inc=1 ;;
+(-B)  canonopt="-B"; optarg="$2"; inc=2;;
+(--version)   canonopt="--version"; inc=1 ;;
+(--verify-debug-info)   canonopt="--verify-debug-info"; inc=1 ;;
+(--target=*) canonopt="--target"; optarg="$( echo "$1" | sed -E "s^--target=^^" )"; inc=1 ;;
+(--system-header-prefix=*) canonopt="--system-header-prefix"; optarg="$( echo "$1" | sed -E "s^--system-header-prefix=^^" )"; inc=1 ;;
+(--show-includes)   canonopt="--show-includes"; inc=1 ;;
+(--rocm-path=*) canonopt="--rocm-path"; optarg="$( echo "$1" | sed -E "s^--rocm-path=^^" )"; inc=1 ;;
+(--rocm-device-lib-path=*) canonopt="--rocm-device-lib-path"; optarg="$( echo "$1" | sed -E "s^--rocm-device-lib-path=^^" )"; inc=1 ;;
+(--ptxas-path=*) canonopt="--ptxas-path"; optarg="$( echo "$1" | sed -E "s^--ptxas-path=^^" )"; inc=1 ;;
+(--precompile)   canonopt="--precompile"; inc=1 ;;
+(--offload-arch=*) canonopt="--offload-arch"; optarg="$( echo "$1" | sed -E "s^--offload-arch=^^" )"; inc=1 ;;
+(--no-system-header-prefix=*) canonopt="--no-system-header-prefix"; optarg="$( echo "$1" | sed -E "s^--no-system-header-prefix=^^" )"; inc=1 ;;
+(--no-offload-arch=*) canonopt="--no-offload-arch"; optarg="$( echo "$1" | sed -E "s^--no-offload-arch=^^" )"; inc=1 ;;
+(--no-gpu-bundle-output)   canonopt="--no-gpu-bundle-output"; inc=1 ;;
+(--no-cuda-version-check)   canonopt="--no-cuda-version-check"; inc=1 ;;
+(--no-cuda-include-ptx=*) canonopt="--no-cuda-include-ptx"; optarg="$( echo "$1" | sed -E "s^--no-cuda-include-ptx=^^" )"; inc=1 ;;
+(--mrelax-relocations)   canonopt="--mrelax-relocations"; inc=1 ;;
+(--migrate)   canonopt="--migrate"; inc=1 ;;
+(--linker-option=*) canonopt="--linker-option"; optarg="$( echo "$1" | sed -E "s^--linker-option=^^" )"; inc=1 ;;
+(--libomptarget-nvptx-bc-path=*) canonopt="--libomptarget-nvptx-bc-path"; optarg="$( echo "$1" | sed -E "s^--libomptarget-nvptx-bc-path=^^" )"; inc=1 ;;
+(--libomptarget-amdgcn-bc-path=*) canonopt="--libomptarget-amdgcn-bc-path"; optarg="$( echo "$1" | sed -E "s^--libomptarget-amdgcn-bc-path=^^" )"; inc=1 ;;
+(--hip-version=*) canonopt="--hip-version"; optarg="$( echo "$1" | sed -E "s^--hip-version=^^" )"; inc=1 ;;
+(--hip-path=*) canonopt="--hip-path"; optarg="$( echo "$1" | sed -E "s^--hip-path=^^" )"; inc=1 ;;
+(--hip-link)   canonopt="--hip-link"; inc=1 ;;
+(--hip-device-lib=*) canonopt="--hip-device-lib"; optarg="$( echo "$1" | sed -E "s^--hip-device-lib=^^" )"; inc=1 ;;
+(--help-hidden)   canonopt="--help-hidden"; inc=1 ;;
+(--gpu-max-threads-per-block=*) canonopt="--gpu-max-threads-per-block"; optarg="$( echo "$1" | sed -E "s^--gpu-max-threads-per-block=^^" )"; inc=1 ;;
+(--gpu-instrument-lib=*) canonopt="--gpu-instrument-lib"; optarg="$( echo "$1" | sed -E "s^--gpu-instrument-lib=^^" )"; inc=1 ;;
+(--gpu-bundle-output)   canonopt="--gpu-bundle-output"; inc=1 ;;
+(--gcc-toolchain=*) canonopt="--gcc-toolchain"; optarg="$( echo "$1" | sed -E "s^--gcc-toolchain=^^" )"; inc=1 ;;
+(--emit-static-lib)   canonopt="--emit-static-lib"; inc=1 ;;
+(--dependent-lib=*) canonopt="--dependent-lib"; optarg="$( echo "$1" | sed -E "s^--dependent-lib=^^" )"; inc=1 ;;
+(--cuda-path=*) canonopt="--cuda-path"; optarg="$( echo "$1" | sed -E "s^--cuda-path=^^" )"; inc=1 ;;
+(--cuda-path-ignore-env)   canonopt="--cuda-path-ignore-env"; inc=1 ;;
+(--cuda-noopt-device-debug)   canonopt="--cuda-noopt-device-debug"; inc=1 ;;
+(--cuda-include-ptx=*) canonopt="--cuda-include-ptx"; optarg="$( echo "$1" | sed -E "s^--cuda-include-ptx=^^" )"; inc=1 ;;
+(--cuda-host-only)   canonopt="--cuda-host-only"; inc=1 ;;
+(--cuda-device-only)   canonopt="--cuda-device-only"; inc=1 ;;
+(--cuda-compile-host-device)   canonopt="--cuda-compile-host-device"; inc=1 ;;
+(--config)  canonopt="--config"; optarg="$2"; inc=2;;
+(--analyzer-output)  canonopt="--analyzer-output"; optarg="$2"; inc=2;;
+(--analyze)   canonopt="--analyze"; inc=1 ;;
+(--amdgpu-arch-tool=*) canonopt="--amdgpu-arch-tool"; optarg="$( echo "$1" | sed -E "s^--amdgpu-arch-tool=^^" )"; inc=1 ;;
+(-###)   canonopt="-###"; inc=1 ;;
+# END GENERATED FROM clang_optlines | optlines_to_caselines
+esac
+}
+scan_clang () {
+    local clang="$1"
+    shift
+    scan_generic clang_optcases clang "${clang:-clang}" "$@"
 }
 
 case "$0" in
@@ -2064,6 +3452,7 @@ case "$0" in
             echo "Warning: without CC_DRIVER_ARGS, cannot rewrite e.g. cpp-specific option -foo to -Wp,-foo (for driver)" 1>&2
         fi
         # FIXME: scrape 'as' and 'ld' from $@, if they look like as/ld commands?
+        # NOW WE continue with the script, after 'esac'; this is the only case that does so.
     ;;
     (*wrap) # assume the next argument is a driver command, and use -### to interrogate it,
             # i.e. act as a "ccwrap" commad in "ccwrap cc ..." ...
@@ -2073,9 +3462,16 @@ case "$0" in
         declare -a real_args
         ctr=0
         just_output=0
+        already_traditional=0
+        already_no_integrated_as=0
+        already_no_integrated_cc1=0
         while shift; do
             case "$1" in
                 ('') ;;
+                # FIXME: this is not properly scanning the command line...
+                ('-fno-integrated-as'|'-no-integrated-as') already_no_integrated_as=1;;&
+                ('-fno-integrated-cc1'|'-no-integrated-cc1') already_no_integrated_cc1=1;;&
+                ('-traditional-cpp'|'--traditional-cpp') already_traditional=1 ;;&
                 ('-###') just_output=1 ;;&
                 (*)
                     real_args[$ctr]="$1"
@@ -2085,17 +3481,34 @@ case "$0" in
         done
         CC_DRIVER_ARGS="$( quote_args "${real_args[@]}" )"
         export CC_DRIVER_ARGS
+        # We will add '-traditional-cpp' to force a separate preprocessing command...
+        # only do this if it's not already present. Remember if we added it.
+        if [[ $already_traditional -eq 0 ]]; then
+            traditional_arg="-traditional-cpp"
+            export CPP_NOT_TRADITIONAL=1
+        else traditional_arg=""
+        fi
+        # Unlike the traditional-cpp thing, we don't have to undo -fno-integrated-as
+        # later, because (at least in principle, FIXME) it does't change the semantics
+        # of the command.
+        if [[ $already_no_integrated_as -eq 0 ]]; then
+            as_arg="-fno-integrated-as"
+        fi
+        # Ditto
+        if [[ $already_no_integrated_cc1 -eq 0 ]]; then
+            cc1_arg="-fno-integrated-cc1"
+        fi
         # Now we need to implement "-wrapper" ourselves, in effect, given a driver $driver
         # that does not support "-wrapper" but does support "-###".
         # What we do next depends on whether "-###" appears in the command already.
         # If it does, we output the command we *would* run.
         # If it doesn't, we actually run them.
-        output_stderr="$( ${CC_DRIVER} -\#\#\# "${real_args[@]}" 2>&1 1>&2 )"
+        output_stderr="$( ${CC_DRIVER} -\#\#\# $traditional_arg $as_arg $cc1_arg "${real_args[@]}" 2>&1 1>&2 )"
         status=$?
         # Every legit command should begin with a space and contain a double quote
         # or a single quote or '-o'
         cmdline_filter="^ .*\([\"']\|-o\)"
-        echo "Got -### status $status and output: $output_stderr" 1>&2
+        debug_print 1 "Got -### status $status and output: $output_stderr" 1>&2
         # Did our command actually trigger the "-###" behaviour?
         # If so, we should get at least one line matching "$cmdline_filter"
         # and also a 'Target:' and a 'Thread model:' line. If we don't get these,
@@ -2119,7 +3532,7 @@ case "$0" in
             echo "Could not identify wrapper alias for $0" 1>&2
             exit 1
         else
-            echo "Identified ourselves as wrapper: $ourselves_as_wrapper" 1>&2
+            debug_print 1 "Identified ourselves as wrapper: $ourselves_as_wrapper" 1>&2
         fi
         status=0
         while read cmdline; do
@@ -2519,26 +3932,25 @@ list_optposns () {
     initargs="$@"
     for n in `seq 1 $#`; do
         arg="${!n}"
-        # echo "O considering $arg (${!optposns_by_opt[*]})" 1>&2
+        debug_print 2 "O considering $arg (${!optposns_by_opt[*]})" 1>&2
         if [[ -v optposns_by_opt[$arg] ]]; then
             output="${output:+${output},}$(echo "${optposns_by_opt[$arg]}" | tr -s '[:blank:]' ',' )"
         fi
-        #shift || break
     done
-    #echo "optposns for ${initargs}: $output" 1>&2
+    debug_print 2 "optposns for ${initargs}: $output" 1>&2
     echo "$output"
 }
-list_argposns () {
+list_optargposns () {
     output=""
     initargs="$@"
     for n in `seq 1 $#`; do
         arg="${!n}"
-        # echo "A considering $arg (${!argposns_by_opt[*]})" 1>&2
-        if [[ -v argposns_by_opt[$arg] ]]; then
-            output="${output:+${output},}$(echo "${argposns_by_opt[$arg]}" | tr -s '[:blank:]' ','  )"
+        debug_print 2 "A considering $arg (${!opgtargposns_by_opt[*]})" 1>&2
+        if [[ -v optargposns_by_opt[$arg] ]]; then
+            output="${output:+${output},}$(echo "${optargposns_by_opt[$arg]}" | tr -s '[:blank:]' ','  )"
         fi
     done
-    #echo "argposns for ${initargs}: $output" 1>&2
+    debug_print 2 "argposns for ${initargs}: $output" 1>&2
     echo "$output"
 }
 get_optposn_unique () {
@@ -2551,12 +3963,12 @@ get_optposn_unique () {
             exit 1
         ;;
         (*) # OK, we get something unique
-            echo "${cc1_args[$posnlist]}"
+            echo "${gcc_cc1_args[$posnlist]}"
         ;;
     esac
 }
-get_argposn_unique () {
-    local posnlist="$(list_argposns "$@")"
+get_optargposn_unique () {
+    local posnlist="$(list_optargposns "$@")"
     case "$posnlist" in
         ('') # OK, we get nothing
         ;;
@@ -2565,17 +3977,18 @@ get_argposn_unique () {
             exit 1
         ;;
         (*) # OK, we get something unique
-            echo "${cc1_args[$posnlist]}"
+            echo "${gcc_cc1_args[$posnlist]}"
         ;;
     esac
 }
 get_optposn_greatest () {
     list_optposns "$@" | tr ',' '\n' | sort -rn | head -n1
 }
-get_argposn_greatest () {
-    list_argposns "$@" | tr ',' '\n' | sort -rn | head -n1
+get_optargposn_greatest () {
+    list_optargposns "$@" | tr ',' '\n' | sort -rn | head -n1
 }
-cc1_command_is_pp () {
+# This logic should work the same for gcc/cc1 and clang.
+command_is_pp () {
     # we're pp iff we saw -E  and we are not suppressing pp output via -M or -MM
     case "$(list_optposns "-M" "-MM")" in
         ('') local doing_m=0 ;;
@@ -2600,12 +4013,13 @@ noop_cc1 () {
     # "canonopt" isn't necessarily a form that will work if we use it
     # as an option, so we want to output the args as they really came in.
     argposn=1
-    while [[ $argposn -lt $cc1_argcount ]]; do
-        echo -n "${argposn}: ${cc1_args[$argposn]}"
+    echo "gcc_cc1_argcount is $gcc_cc1_argcount" 1>&2
+    while [[ $argposn -lt $gcc_cc1_argcount ]]; do
+        echo -n "${argposn}: ${gcc_cc1_args[$argposn]}"
         inc=${incs_by_argposn[$argposn]:-1}
         for n in `seq $(( $argposn + 1 )) $(( $argposn + $inc - 1 ))`; do
             echo -n " "
-            echo -n "${cc1_args[$n]}"
+            echo -n "${gcc_cc1_args[$n]}"
         done
         echo -n " ("
         echo -n "inc is $inc; "
@@ -2625,7 +4039,7 @@ noop_cc1 () {
         argposn=$(( $argposn + $inc ))
     done
 }
-lift_cc1_to_cc () {
+lift_gcc_cc1_to_cc () {
     # this is hard.
     # but a first cut is almost a no-op
     # - rewrite -MD into -MD -MF
@@ -2644,13 +4058,14 @@ lift_cc1_to_cc () {
     #        both arg1 and arg2. So let's scan the driver command, not the cc1 command.
     #        Any arg we identify in the driver command that appears uniquely in the cc1 command
     #        should get the prefix.
-    outctr=0
-    md_argind="$(get_argposn_greatest "-MD" "-MMD")"
-    mf_argind="$(get_argposn_greatest "-MF" )"
+    outctr=1  # we start at position 1
+    md_argind="$(get_optargposn_greatest "-MD" "-MMD")"
+    mf_argind="$(get_optargposn_greatest "-MF" )"
     # echo "md, mf arginds: $md_argind, $mf_argind" 1>&2
     local inposn=1
-    while [[ $inposn -lt ${cc1_argcount} ]]; do
-        arg="${cc1_args[$inposn]}"
+    debug_print 2 "gcc_cc1_argcount is $gcc_cc1_argcount" 1>&2
+    while [[ $inposn -le ${gcc_cc1_argcount} ]]; do
+        arg="${gcc_cc1_args[$inposn]}"
         # If we have -MD,
         # and if this is -MF, or if it's -MD or -MMD but not the greatest md argind,
         # skip it and its argument
@@ -2670,7 +4085,7 @@ lift_cc1_to_cc () {
             if [[ "$arg" == "-MD" ]] || [[ "$arg" == "-MMD" ]]; then
                 outargs[$outctr]="$arg"; outctr=$(( $outctr + 1 ))
                 outargs[$outctr]="-MF"; outctr=$(( $outctr + 1 ))
-                outargs[$outctr]="${cc1_args[$(($inposn + 1))]}"; outctr=$(( $outctr + 1 ))
+                outargs[$outctr]="${gcc_cc1_args[$(($inposn + 1))]}"; outctr=$(( $outctr + 1 ))
                 inposn=$(( $inposn + 2 ))
                 continue
             fi
@@ -2700,7 +4115,7 @@ lift_cc1_to_cc () {
                 outargs[$outctr]="-Wp,$arg"; outctr=$(( $outctr + 1 ))
                 # output any separate arg
                 for n in `seq $(( $inposn + 1 )) $(( $inposn + $inc - 1 ))`; do
-                    outargs[$outctr]="-Wp,${cc1_args[$n]}"; outctr=$(( $outctr + 1 ))
+                    outargs[$outctr]="-Wp,${gcc_cc1_args[$n]}"; outctr=$(( $outctr + 1 ))
                 done
             ;;
             (*)
@@ -2708,10 +4123,50 @@ lift_cc1_to_cc () {
                 outargs[$outctr]="$arg"; outctr=$(( $outctr + 1 ))
                 # output any separate arg
                 for n in `seq $(( $inposn + 1 )) $(( $inposn + $inc - 1 ))`; do
-                    outargs[$outctr]="${cc1_args[$n]}"; outctr=$(( $outctr + 1 ))
+                    outargs[$outctr]="${gcc_cc1_args[$n]}"; outctr=$(( $outctr + 1 ))
                 done
             ;;
         esac
+
+        inposn=$(( $inposn + $inc ))
+    done
+}
+detraditionalize_clang_if_needed () {
+    outctr=1  # we start at position 1
+    traditional_cpp_argind="$(get_optposn_greatest "-traditional-cpp" "--traditional-cpp")"
+    local inposn=1
+    while [[ $inposn -le ${clang_argcount} ]]; do
+        arg="${clang_args[$inposn]}"
+        # If we have -MD,
+        # and if this is -MF, or if it's -MD or -MMD but not the greatest md argind,
+        # skip it and its argument
+        # Else if it's -MD or -MMD, include it and also a -MF (slurped using the greatest argind
+        # of *either* md *or* mf argind)
+        # FIXME: handle case where some of {-traditional-cpp, --traditional-cpp} are
+        # passed multiple times (i.e. don't just do a single -eq test)
+        if [[ -n "$traditional_cpp_argind" ]] && [[ -n "$CPP_NOT_TRADITIONAL" ]] \
+        && [[ $inposn -eq $traditional_cpp_argind ]]; then
+            # skip it
+            inposn=$(( $inposn + 1 ))
+            continue
+        fi
+        if [[ -n "$CPP_NOT_TRADITIONAL"  ]]; then
+            case "$arg" in
+                (-traditional-cpp|--traditional-cpp) echo "ERROR! not traditionally traditional (argind: $traditional_cpp_argind)" 1>&2
+                    exit 1
+                ;;
+                (*)
+                ;;
+            esac
+        fi
+        # how many will we inc by?
+        inc=${incs_by_argposn[$inposn]:-1}
+
+        outargs[$outctr]="$arg"; outctr=$(( $outctr + 1 ))
+        # output any separate arg
+        for n in `seq $(( $inposn + 1 )) $(( $inposn + $inc - 1 ))`; do
+            outargs[$outctr]="${clang_args[$n]}"; outctr=$(( $outctr + 1 ))
+        done
 
         inposn=$(( $inposn + $inc ))
     done
@@ -2749,29 +4204,20 @@ case "$1" in
         # How do we do this? cc1_command_is_pp is crusty and also scans the cc1 command.
         # Let's (1) scan it once, (2) apply the equivalent "is it pp?" test as currently,
         # (3) re-use our scanned results when we run our CPP or CC.
-        declare -a cc1_args
+        declare -a gcc_cc1_args
         declare -a input_files_by_argposn
         declare -a canonopts_by_argposn
         declare -a inc_by_argposn
         declare -A optposns_by_opt
-        declare -A argposns_by_opt
+        declare -A optargposns_by_opt
         declare -a optargs_by_argposn
         declare -a incs_by_argposn
-        # FIXME: don't assume gcc; probe it
         # FIXME: make this contract of "will write the above arrays..." explicit somehow
         scan_gcc_cc1 "$@" # this writes vars
         # print out how we scanned the command line
         if [[ ${DEBUG_CC:-0} -gt 0 ]]; then
             noop_cc1 1>&2
         fi
-        case "$(list_optposns "-o" "-output")" in
-            ('') have_o=0 ;;
-            (*)  have_o=1 ;;
-        esac
-        case "$(list_optposns "-M" "-MM")" in
-            ('') doing_m=0 ;;
-            (*)  doing_m=1 ;;
-        esac
         if [[ "$(list_optposns "-o" "-output")" == "" ]] && \
            [[ "$(list_optposns "-M" "-MM" )"    == "" ]]; then
             # no output file... hmm
@@ -2780,7 +4226,7 @@ case "$1" in
             # generating the .s or .i output filename... 
             exit 1
         fi
-        if cc1_command_is_pp "$@"; then
+        if command_is_pp "$@"; then
             CPP="${CPP:-${CC_DRIVER} -E}"
             # How do we do this?
             # 1. normalize away cc1 tricky cases  <-- sets norm_cc1_options
@@ -2791,16 +4237,53 @@ case "$1" in
             # declare -a cc_options
             #write_cc_options_from_cc1_command "$@"
             declare -a outargs
-            lift_cc1_to_cc "$@"
+            lift_gcc_cc1_to_cc "$@"
             do_exec ${CPP} "${outargs[@]}"
         else
             CC="${CC:-${CC_DRIVER} -S}"
             #declare -a cc_options
             #write_cc_options_from_cc1_command "$@"
             declare -a outargs
-            lift_cc1_to_cc "$@"
+            lift_gcc_cc1_to_cc "$@"
             do_exec ${CC} "${outargs[@]}"
         fi
+        ;;
+    (*/clang)
+        # How do we do this?
+        # We assume that if it's needed, we have done the trick of adding -traditional-cpp.
+        # That would ensure we get run twice: once for preprocessing, once for compilation.
+        # Both will hit this case. So we still need to detect the "is pp" case and run our
+        # pp wrapper specially here. If *we* added -traditional-cpp, we drop it when we
+        # actually do the preprocessing step. How does "driver us" (the parent process)
+        # signal that we were already traditional?
+        declare -a clang_args
+        declare -a input_files_by_argposn
+        declare -a canonopts_by_argposn
+        declare -a inc_by_argposn
+        declare -A optposns_by_opt
+        declare -A optargposns_by_opt
+        declare -a optargs_by_argposn
+        declare -a incs_by_argposn
+        scan_clang "$@" # this writes vars
+        declare -a outargs
+        detraditionalize_clang_if_needed "$@"
+        # FIXME: do the lifting to cc
+        if [[ "$(list_optposns "-E")" == "" ]] && \
+           [[ "$(list_optposns "-S")" == "" ]] && \
+           [[ "$(list_optposns "--emit-llvm-bc" "-emit-llvm-bc")" == "" ]]; then
+            # something is wrong -- maybe the -traditional-cpp hack didn't work?
+            echo "ERROR: failed to split clang's preprocessing and compilation steps" 1>&2
+            exit 1
+        elif [[ "$(list_optposns "-E")" != "" ]]; then
+            CMD="${CPP:-${1}}"
+        elif [[ "$(list_optposns "--emit-llvm-bc")" != "" ]]; then
+            # What to do here? We just treat it as a mode of CC, i.e.
+            # our compiler wrapper must support both --emit-llvm-bc and -S
+            CMD="${CC:-${1}}"
+        else # must be -S
+            CMD="${CC:-${1}}"
+        fi
+        do_exec ${CMD} "${outargs[@]}"
         ;;
     (as|*/as)
         AS="${AS:-$1}" # don't call into driver again; 'as' is a documented tool
