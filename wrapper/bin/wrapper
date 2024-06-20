@@ -146,19 +146,6 @@
 
 # Note that there is no -Xcompiler option.
 
-
-# We also do AS_TARGETED_OPTS and LD_TARGETED_OPTS, but they are less useful
-# because we don't launch the driver for AS and LD.
-# So our contract is (1) we put "-o" first   (and also -MF? HMM)
-#                    (2) we re-lift to driver, i.e. "-Wp,blah" etc.
-#                    (3) we set CPP_TARGETED_OPTS
-
-# Note that in GCC, -no-integrated-cpp no longer does the obvious: even
-# if run with -no-integrated-cpp, gcc will not run `cpp' ever... it
-# uses cc1 -E. However, for clients that want to intercept just preprocessing,
-# -no-integrated-cpp is still important: it prevents a combined preprocess-
-# -and-compile cc1 invocation.
-#
 # If we are symlinked under a name ending '-cflags', '-cppflags',
 # '-ldflags' etc, we print out the options that one should pass
 # to the compiler for the wrapper to be employed. So you can do
@@ -2037,75 +2024,6 @@ case "$1" in
 (--all-warnings)   canonopt="--all-warnings"; inc=1 ;;
 # END GENERATED FROM gcc_cc1_optlines | optlines_to_caselines
 esac
-#        (-) # stdin/stdout
-#            # this is a filename -- do something with it
-#            input_files_by_argposn[$realposn]="$1"
-#        ;;
-#        (-*)    # unrecognised option
-#            echo "WARNING: unrecognised optionlike argument $1; assuming argumentless" 1>&2
-#            echo "Try: diff -u <( sed -n \$'/# BEGIN GENERATED FROM gcc_cc1_optlines/,\$ p\\n/# END GENERATED FROM gcc_cc1_optlines/ q' "$0" ) <( . "$0" && gcc_cc1_optlines ${cc1} | optlines_to_caselines )"
-#            # what to do? assume it's an option with no argument
-#            canonopt="$1"; inc=1
-#        ;;
-#        (*)
-#            # this is a filename -- do something with it
-#            input_files_by_argposn[$realposn]="$1"
-#        ;;
-#    esac
-#    # We just got "canonopt" and "optarg" -- do something with them.
-#    # We are keeping:
-#    # input_files_by_argposn  sparse array, one entry for each arg that is an input file
-#    # canonopts_by_argposn    sparse array, one entry for each arg that is an option
-#    # inc_by_argposn          sparse array, one entry for whenever there is an 'inc' > 1
-#    # optposns_by_opt         associative array, one entry (space-sep list of indices) per canonopt seen
-#    # optargposns_by_opt      associative array, one entry (space-sep list of indices) per canonopt seen
-#    #    ^-- is this really useful? for a JARG it gives us the whole opt, not the isolated optarg
-#    #    Maybe we should just use the inc and keep optargs_by_argposn? YES
-#    # optargs_by_argposn      sparse array, one entry (the optarg) for each arg that embodies an optarg
-#    # incs_by_argposn         how many to increment argpos by to get to the next input file or opt
-#    # REMEMBER: be consistent about "posn" versus "pos"
-#    # We need to remember 'increments' on a per-argposn basis.
-#    # We extend this to capture the optarg also.
-#    # At any position, there may be an optarg... e.g. for -foo=bar, "bar" is at
-#    # whatever position "-foo" is at, but for "-foo bar", "bar" is at the next position.
-#    if [[ $inc -gt 1 ]]; then incs_by_argposn[$realposn]="$inc"; fi
-#    if [[ -n "$canonopt" ]]; then
-#        canonopts_by_argposn[$realposn]="$canonopt"
-#        existing_optposns_for_this_opt="${optposns_by_opt["$canonopt"]}"
-#        optposns_by_opt["$canonopt"]="${existing_optposns_for_this_opt:+${existing_optposns_for_this_opt} }$realposn"
-#        if [[ -n "$optarg" ]]; then
-#            # # remember arguments as a list of positions -- yes it's indirect but
-#            # # args may have spaces in them, which would mess up a space-separated list
-#            # existing_argposns_for_this_opt="${optargposns_by_opt["$canonopt"]}"
-#            # optargposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} }$realposn"
-#
-#            # We have an arg and a canonopt, but since some optargs are JARGS,
-#            # the optarg may or may not be isolated in the argument list;
-#            # If it is, it is at the next argposn and inc is 2. Otherwise it is
-#            # jammed into the string at the current argposn and inc is 1.
-#            # (One day we may want to capture multiple args, in forms like
-#            # -foptimize-blah=foo, where both "blah" and "foo" are arguments.
-#            # That will make all the above 'case' statment more interesting but
-#            # it should still basically fit the model.
-#            optargs_by_argposn[$(( $realposn + $inc - 1))]="$optarg"
-#            # Also remember arguments as a list of positions -- yes it's indirect but
-#            # args may have spaces in them, which would mess up a space-separated list
-#            existing_argposns_for_this_opt="${optargposns_by_opt["$canonopt"]}"
-#            optargposns_by_opt["$canonopt"]="${existing_argposns_for_this_opt:+${existing_argposns_for_this_opt} }$realposn"
-#        fi
-#    fi
-#
-#    # snarf the unmodified arg and increment realpos
-#    for n in `seq 1 $inc`; do
-#         { gcc_cc1_args[$realposn]="$1"
-#           shift && \
-#           realposn=$(( $realposn + 1 )) && \
-#           gcc_cc1_argcount=$(( $gcc_cc1_argcount + 1 ))
-#         } || return
-#    done
-#    
-#    # end of our top-level 'while' loop: if we're out of args, we returned above
-#    done
 }
 
 clang_optcases () {
@@ -3451,7 +3369,6 @@ case "$0" in
         if [[ -z "$CC_DRIVER_ARGS" ]]; then
             echo "Warning: without CC_DRIVER_ARGS, cannot rewrite e.g. cpp-specific option -foo to -Wp,-foo (for driver)" 1>&2
         fi
-        # FIXME: scrape 'as' and 'ld' from $@, if they look like as/ld commands?
         # NOW WE continue with the script, after 'esac'; this is the only case that does so.
     ;;
     (*wrap) # assume the next argument is a driver command, and use -### to interrogate it,
@@ -3468,7 +3385,8 @@ case "$0" in
         while shift; do
             case "$1" in
                 ('') ;;
-                # FIXME: this is not properly scanning the command line...
+                # FIXME: this is not properly scanning the command line... run our driver
+                # scanner, then sift the results.
                 ('-fno-integrated-as'|'-no-integrated-as') already_no_integrated_as=1;;&
                 ('-fno-integrated-cc1'|'-no-integrated-cc1') already_no_integrated_cc1=1;;&
                 ('-traditional-cpp'|'--traditional-cpp') already_traditional=1 ;;&
@@ -3552,6 +3470,8 @@ case "$0" in
     ;;
     (real-ld)
         # A neat trick for wrapping ld within collect2... see below.
+        # FIXME: snarf our default 'ld' the same way collect2 does it,
+        # since this 'real-ld' thing is specific to collect2.
         ${LD:-ld} "$@"
         status=$?
         exit $status
@@ -3569,280 +3489,6 @@ do_exec () {
     "$@"
     status=$?
     exit $status
-}
-
-# We want to allow a "drop-in cpp replacement" when in fact, when
-# compiling C code, even with -no-integrated-cpp, cpp /per se/ is never run.
-# Rather, a separate cc1 invocation is done... but the details of its command
-# line are rather compiler-specific. We try to turn these into cpp options.
-#
-# In this and subsequent functions we take a full command, i.e. with "$1" being
-# the command name, even though we only really care about the options. This is
-# to allow us to write "while shift || break ...", which is handy since bash
-# lacks a do--while loop. The alternative "while true" has the downside that a
-# "continue" will make it loop infinitely.
-
-set_cc1_options () {
-    declare -a cc1_options
-    declare -a cc1_option_argcounts
-    # At first I wanted to use an associative array, cc1_options_with_args
-    # s.t. indexing it with [k] will give the argument to option k.
-    # However, this doesn't work if there any repeated-with-different-args options,
-    # and duh, obviously, there are: -I is one.
-    # Instead we can track the argcount at each position.
-    # Then if you want to walk by chunk, you can just do ctr=$(( $ctr + 1 + ${argcount[$ctr]} ))
-
-    # Perhaps a single walk_cc1_args function can be enough.
-    # What do we do with the driver args? Do we walk those too?
-    # What about the "privileged" options that a subcommand can assume come first?
-    #
-    # Our core task is turning cc1 options back into driver options
-    # (we don't do this for 'as' or 'ld' -- we just call them).
-    # However, in order to do this we need to test for presence of "-opt" in
-    # the driver option (or more likely, "-Wp,-opt", or "-opt" preceded by "-Xpreprocessor", etc.)
-    #
-    # I think we should build a third array, cc1_option_positions
-    # that is actually associative
-    # and
-    # whose entries are things like "1 2 3" if we do "cc -Iblah -Ifoo -Ibaz"
-    # and so on.
-    
-    # TODO:
-    # basic version supporting -Wp,-blah and -Xpreprocessor blah correctly
-    # support gcc  -v --help correctly (can we wrap such an invocation with ccwrap? with wrapper, if gcc even runs the wrapper in such cases?)
-    # test against the output of -v --help somehow -- maybe just test our option parser function in isolation?
-    #        ... that it can roundtrip a synthetic command line consisting of every option (with a synthetic argument as needed)?
-    #        ... similar test for cc1 as for cc
-    # remember that -Wl,...,... can have many comma-separated arguments,
-    # and these get translated into distinct arguments! So we don't have to check just for
-    # -Wp,-blah, but rather, for any -Wp, we need to look for -blah to the right of a comma
-    # (and followed by a comma or end-of -string)
-    # (AND then cross-check context s.t. we only flag if the surrounding args match the rest
-    # of the -Wp,... sequence?)
-    # Hmm.
-    # Is there a way to scrape a source file from gcc that defines all these
-    # and then interpret that?
-    # We could possibly parse the output of gcc -v --help,
-    # just focusing on the driver and cc1 parts.
-    #
-    # NOTE interestingly:
-    # "Options starting with -g, -f, -m, -O, -W, or --param are automatically
-    # passed on to the various sub-processes invoked by gcc.  In order to pass
-    # other options on to these processes the -W<letter> options must be used.
-    #
-    # ... in other words, *anything* matching -g*, -f*, -m*, -O* and --param*
-    #       (usually "--param=*" is the form)
-    # is accepted by the driver and passed to cc1? It appears not: if I try -fblah,
-    # it is 'gcc' not 'cc1' that reports the error, unlike with '-Xpreprocessor -blah'.
-    # I think we should scrape "-v --help" only for testing purposes,
-    # and open-code some globs.
-    # However, our open-coded glob cases might be generated from some script over -v --help.
-    # We  could even embed that scripts
-}
-
-# Lifting is harder than scanning. E.g. lifting -blah to -Wp,-blah
-# And remember we can have sequences
-# of arguments separated by ',' so we need to match sequences of lowered arguments.
-# And remember that we have all the normalization stuff to add,
-# and the fact that -MD is different in cc1 (it takes an arg) vs driver/cpp (it doesn't).
-# So we can't just merge all the options together, at least not before normalizing these away.
-
-write_cpp_options_from_cc1_command () {
-    declare -a norm_cc1_command
-    write_norm_cc1_options_from_cc1_command "$@"
-    # the normalized options lack the initial command, so add it back
-    do_write_cpp_options_from_normalized_cc1_command "$1" "${norm_cc1_options[@]}"
-}
-# take a cc1 command with normalized options, write cpp options
-do_write_cpp_options_from_normalized_cc1_command () {
-    ctr=0
-    while shift || break; do
-        debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
-        if [[ $# -eq 0 ]]; then break; fi
-        case "$1" in
-            # we are running our own cpp-alike -- filter out non-cpp args # FIXME: not good just to drop these
-            (-imultiarch|-iremap*|-auxbase|-auxbase-strip) shift || break ;; # skip arg too
-            (-quiet|-fhonour-copts) ;; # skip just it
-            (*)
-                debug_print 2 "Write-cpp: snarfing $1" 1>&2
-                cpp_options[$ctr]="$1"
-                ctr=$(( $ctr + 1 ))
-            ;;
-        esac
-    done
-    # Finally, if we were called with CPP="/path/to/cpp -some_arg -another_arg"
-    # (say by an automake-generated Makefile)
-    # we may want to deduplicate arguments between that cpp and us.
-    # We assume that no argument added to CPP has duplicate-sensitive or
-    # position-sensitive meaning.
-    # PROBLEM: this doesn't work if normalization changed a word syntactically,
-    # which it does with -D et al. Need to act earlier
-    if [[ -n "$CPP" ]]; then
-        declare -a norm_cpp_command
-        word_is_present () {
-            for w in "${cpp_options[@]}"; do
-                debug_print 2 "Comparing $w against $1" 1>&2
-                if [[ "$w" == "$1" ]]; then
-                    return 0
-                else
-                    true
-                fi
-            done
-            return 1
-        }
-        ctr=0
-        for word in $CPP; do
-            if word_is_present "$word"; then
-                debug_print 1 "Dropping $w from CPP" 1>&2
-            else
-                norm_cpp_command[$ctr]="$word"
-                ctr=$(( $ctr + 1))
-            fi
-        done
-        CPP=""
-        for w in "${norm_cpp_command[@]}"; do
-            CPP="${CPP:+$CPP }$w"
-        done
-    fi
-}
-
-write_cc_options_from_cc1_command () {
-    declare -a norm_cc1_options
-    write_norm_cc1_options_from_cc1_command "$@"
-    # the normalized options lack the initial command, so add it back
-    do_write_cc_options_from_normalized_cc1_command "$1" "${norm_cc1_options[@]}"
-}
-# given command, write options
-do_write_cc_options_from_normalized_cc1_command () {
-    debug_print 1 "writing cc options for $@" 1>&2
-    ctr=0
-    while shift || break; do
-        debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
-        if [[ $# -eq 0 ]]; then break; fi
-        case "$1" in
-            # we are running our own .i-to-.s pass -- filter out cpp-only args # FIXME: not good just to drop these
-            (-imultiarch|-iremap*|-auxbase|-auxbase-strip) shift || break ;; # skip arg too
-            (-quiet|-fhonour-copts) ;; # skip just it
-            (-MD|-MMD) # NASTY: with cc1, -MD has an argument! it's the filename, like with -MF.
-                # with cc or cpp, we have to use -MM?D -MF
-                cc_options[$ctr]="$1"
-                ctr=$(( $ctr + 1 ))
-                shift # now $1 is the filename argument
-                cc_options[$ctr]="-MF"
-                ctr=$(( $ctr + 1 ))
-                cc_options[$ctr]="$1"
-                ctr=$(( $ctr + 1 ))
-            ;;
-            (*)
-                # FIXME: lift back -Wp,_   and re-insert -Xpreprocessor
-                debug_print 2 "Write-cc: snarfing $1" 1>&2
-                cc_options[$ctr]="$1"
-                ctr=$(( $ctr + 1 ))
-            ;;
-        esac
-    done
-}
-
-declare -a infiles
-# We run a normalizing pass on a cc1 command, to remove some awkward forms from it.
-# NOTE: normalizing cc1 options does not remove the nasty "-MD <argument>" form.
-#
-# What does it do?
-# It tries to enumerate input files, but is very imprecise at present.
-# It identifies the output file, pulling out "-o" and then re-adding it (pointlessly).
-#
-# The main purpose is to rewrite cases where a single cc1 invocation works, but
-# splitting into separate preprocessing and compilation invocations doesn't.
-# The main thing currently is to futz with options to avoid a breaking interaction
-# between -Werror, -D_FORTIFY_SOURCE and -Os.
-write_norm_cc1_options_from_cc1_command () {
-    prev_arg=""
-    inctr=0
-    ctr=0
-    outfile=""
-    saw_E=""
-    saw_Os=""
-    saw_Werror=""
-    saw_D_FORTIFY_SOURCE=""
-    while shift || break; do
-        if [[ $# -eq 0 ]]; then break; fi
-        debug_print 2 "\$# is $#, \$1 is '$1'" 1>&2
-        not_infile=""
-        case "$1" in
-            (-o)
-                outfile="$2"
-                shift
-            ;; # don't keep matching; we've shifted
-            (-E) saw_E=1;
-                ;;& # then keep matching... want to hit "-*" below
-            (-Os) saw_Os=1
-                ;;& # then keep matching
-            (-Werror) saw_Werror=1
-                ;;& # then keep matching
-            (-D_FORTIFY_SOURCE|-D_FORTIFY_SOURCE=*) saw_D_FORTIFY_SOURCE=1; pos_D_FORTIFY_SOURCE=$ctr
-                ;;& # then keep matching
-            (_FORTIFY_SOURCE|_FORTIFY_SOURCE=*)
-                if [[ "$prev_arg" == "-D" ]]; then
-                    saw_D_FORTIFY_SOURCE=1; pos_D_FORTIFY_SOURCE=$(( $ctr - 1 ))
-                fi
-                ;;& # then keep matching
-            (-) # it denotes stdin, so is an infile
-                # (the case of a stdout outfile was handled above)
-                infiles[$inctr]="$1"
-                inctr=$(( $inctr + 1 ))
-            ;;& # then keep matching
-            (-*) # looks like an option, so assume it's NOT an infile
-                 # though FIXME: that could be wrong if we've seen '--'? Does gcc accept this?
-                 # NO. It does not. "gcc: error: unrecognized command-line option '--'"
-            ;;&
-            ([^-]*)
-                # FIXME: this is super-imprecise.
-                # A useful regex for scraping the gcc man page for opts-with-args:
-                # -[-a-z0-9]+ [^-[:blank:]]
-                case "$prev_arg" in
-                    (-D|-U|-x|-aux-info|-dumpbase|-auxbase|-I|-i[a-z]*|-X*|-u|-T|--param|-G|-MF|-MD|-MMD)
-                    ;; # it's the opt's arg
-                    (*)
-                        # it may be an input file
-                        infiles[$inctr]="$1"
-                        inctr=$(( $inctr + 1 ))
-                    ;;
-                esac
-            ;;&
-            (*)
-                debug_print 2 "Normalize: snarfing $1" 1>&2
-                norm_cc1_options[$ctr]="$1"
-                ctr=$(( $ctr + 1))
-            ;;
-        esac
-        prev_arg="$1"
-    done
-    # re-add -o
-    if [[ -n "$outfile" ]]; then
-        norm_cc1_options[$ctr]="-o"
-        ctr=$(( $ctr + 1))
-        norm_cc1_options[$ctr]="$outfile"
-        ctr=$(( $ctr + 1))
-    fi
-    # if we saw -Os and -Werror and -D_FORTIFY_SOURCE, then we have a problem:
-    # -Os adds a builtin #define of _FORTIFY_SOURCE which triggers a multiple
-    # definition warning, hence error. The integrated cpp avoids this, presumably
-    # by detecting the already-present -D_FORTIFY_SOURCE. Arguably the client
-    # is at fault, although it's not documented that -Os implies -D_FORTIFY_SOURCE.
-    # HACK: if we saw all three, change -D_FORTIFY_SOURCE to -U_...
-    if [[ -n "$saw_Os" ]] && [[ -n "$saw_Werror" ]] & [[ -n "$saw_D_FORTIFY_SOURCE" ]]; then
-        # another HACK: to handle separate "-D" and "_FORTIFY_SOURCE", we only assume that
-        # the pos records where the "-D" is
-        case "${norm_cc1_options[$pos_D_FORTIFY_SOURCE]}" in
-            (-D) # rewrite the next one too
-                norm_cc1_options[$pos_D_FORTIFY_SOURCE]="-U"
-                norm_cc1_options[$(( $pos_D_FORTIFY_SOURCE + 1 ))]="$( echo "${norm_cc1_options[$(( $pos_D_FORTIFY_SOURCE + 1 ))]}" | sed 's/=.*//' )"
-            ;;
-            (-D_FORTIFY_SOURCE*)
-                norm_cc1_options[$pos_D_FORTIFY_SOURCE]="$( echo "${norm_cc1_options[$pos_D_FORTIFY_SOURCE]}" | sed 's/-D/-U/' | sed 's/=.*//' )"
-            ;;
-        esac
-    fi
 }
 
 # utility for as-wrappers
@@ -3892,41 +3538,6 @@ parse_assembler_command () {
     done
 }
 
-# old version
-#cc1_command_is_pp () {
-#    local ctr=0
-#    saw_pp=0
-#    outpos=0
-#    doing_m=0
-#    declare -a seen_args
-#    while shift; do
-#        ctr="$(( $ctr + 1 ))"
-#        seen_args[$ctr]="$1"
-#        if [[ -z "$1" ]]; then continue; fi
-#        case "$1" in
-#         (-o) outfile="$2"; outpos="$(( $ctr + 1 ))";;
-#         (-M|-MM) doing_m=1 ;;
-#         (-E) saw_pp=1 ;;
-#        esac
-#    done
-#    # If we didn't see an output file, it might mean that
-#    # - the default output filename is being used (DOES the driver do this?)
-#    # - the output is going to stdout, and it's a make rule (-M, -MM)
-#    # - the output is actual compilation stuff and -pipe is being used?
-#    # FIXME: support this case once we've seen an example.
-#    if [ $outpos -eq 0 ] && ! [ $doing_m -eq 1 ]; then
-#        echo "FIXME: can't work with cc1/cc1plus commands with no output file" 1>&2
-#        exit 1
-#    fi
-#    # if we're only preprocessing, or if we have no explicit output file, just run cc1
-#    if [ "$saw_pp" -eq 0 ]; then
-#        debug_print 1 "Wrapping cc1, we don't seem to be doing preprocessing; args ${seen_args[@]}" 1>&2
-#        false
-#    else
-#        debug_print 1 "Wrapping cc1, we seem to be doing a preprocessing step; args ${seen_args[@]}" 1>&2
-#        true
-#    fi
-#}
 list_optposns () {
     output=""
     initargs="$@"
@@ -4040,6 +3651,8 @@ noop_cc1 () {
     done
 }
 lift_gcc_cc1_to_cc () {
+    # FIXME: reinstate the special handling of -Os with -Werror with -D_FORTIFY_SOURCE
+
     # this is hard.
     # but a first cut is almost a no-op
     # - rewrite -MD into -MD -MF
@@ -4267,7 +3880,7 @@ case "$1" in
         scan_clang "$@" # this writes vars
         declare -a outargs
         detraditionalize_clang_if_needed "$@"
-        # FIXME: do the lifting to cc
+        # FIXME: actually do the lifting to cc like we do for GCC
         if [[ "$(list_optposns "-E")" == "" ]] && \
            [[ "$(list_optposns "-S")" == "" ]] && \
            [[ "$(list_optposns "--emit-llvm-bc" "-emit-llvm-bc")" == "" ]]; then
