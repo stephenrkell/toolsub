@@ -87,15 +87,15 @@
 # will process. So those are the "targeted" ones. But that's coupling to a
 # particular tool behaviour... how does this generalise?
 
-# I think the answer is that as well as CPP="cppwrapper" we need CPP_IDENTIFY_ARGS="-fpass-JARG"
+# I think the answer is that as well as CPP="cppwrapper" we need CC_IDENTIFY_ARGS="-fpass-JARG"
 # i.e. to provide a vaguely getopt-like description of the arguments that our wrapper
-# cares about. Then our scanner can pass these as CPP_IDENTIFIED_ARGS="1-fpass-dumpallocs"
+# cares about. Then our scanner can pass these as CC_IDENTIFIED_ARGS="1-fpass-dumpallocs"
 # OR should that be "1-Wp,-fpass-dumpallocs"?
 # i.e. how does this interact with lifting?
 # It's our design that we want to lift the cc1 command back to a driver command.
 # so that our wrapper is specified as CPP="cilpp -real-cpp \"$CC_DRIVER -E\""
 # and we will expand the $CC_DRIVER when we run it.
-# Then what goes in the above CPP_IDENTIFY_ARGS and CPP_IDENTIFIED_ARGS?
+# Then what goes in the above CC_IDENTIFY_ARGS and CC_IDENTIFIED_ARGS?
 # Our wrapper does not care whether its targeted options were decorated with
 # -Wp,*, -Xpreprocessor or so on. But then, it is masquerading as a driver so
 # it does, after all, care about processing those.
@@ -109,43 +109,18 @@
 # lifting for cilpp? AH NO, but if we don't lift then we can't use 'cc -E' as
 # the "real CPP"!
 #
-# So maybe we just say that CPP_IDENTIFY_ARGS and CPP_IDENTIFIED_ARGS
-# are non-lifted, but the actual args we pass on the command line will be lifted,
-# but in CPP_IDENTIFIED_ARGS they appear in non-lifted form? We also need to know
-# the range of *lifted* argument indices that they correspond to, so the tool can
-# delete them from the real cpp command (if it so chooses!).
+# We just say that CC_IDENTIFIED_ARGS is non-lifted, but can be non-contiguous.
+# It works by identifying argument positions... if we had to lift them in order to
+# push them through the driver, we inserted -Xpreprocessor beforehand, but the
+# position we include in CC_IDENTIFIED_ARGS is the bona-fide position, not the
+# position of -Xpreprocessor.
+#
 # This might be weird in the case of -MD <file> as seen by cc1. Should the cilpp
 # or similar tool really have to know about this? I think we have to rely on
 # normalizing that away... it is super-irregular. (CHECK: does clang's cc1 have
 # this problem? NO, but it expands to a "-dependency-file" option. GAH. So
 # how would we run this by our cilpp-like tool? It does not lift straightforwardly
 # so ...)
-
-# XXX: delete this 'targeted' stuff
-#  We know that all
-# our options came from a cc1 invocation. One kind of "targeted" means it
-# got there from -Wp or -Xpreprocessor. What's another?
-#
-# Let's imagine we have two possible behaviours: lift to the driver, or
-# "leave at cpp". The latter has stripped out -Wp and -Xpreprocessor.
-# But it's not safe to reorder these relative to other options.
-# So the cpp tool needs to scan the command line precisely.
-# Maybe the tool needs to tell us which are its "TARGETED" options?
-# And it does this exactly because it wraps an underlying tool, and only
-# the underlying tool groks the full set of options.
-# But that's OK; it's a wrapper! We are in the business of wrapping!
-# So maybe we can have a default spec for "args the wrapper is sensitive to"
-# and in return, we tell it where they are. It deletes those (at its option;
-# it may want to leave them in! if they are just ordinary cpp options, say)
-#
-# Can we use getopt() for this spec? Maybe. cc/cc1 do not do option-combining
-# (things like "tar -xzf") so we could use getopt_long_only perhaps.
-# There is no "optstring" syntax for getopt_long and getopt_long_only,
-# just a list of struct option { name, has_arg, ...}. So the spec should be
-# perhaps a whitespace-separated list of names, with '=' at the end of any
-# that takes an argument.
-
-# Again this is us doing the scanning.
 
 # Note that there is no -Xcompiler option.
 
@@ -156,6 +131,15 @@
 # gcc `/path/to/this/file/wrapper-cflags` <... normal gcc args...>
 #
 # to run with the alternative cpp, and so on.
+
+if [[ -n "$PROFILE_CC_WRAPPER" ]]; then
+    if ! [[ -r /proc/timer_list ]]; then
+        echo "WARNING: not profiling; check that /proc/timer_list exists and is readable" 1>&2
+    else
+        echo "Profile columns: <last command time> <total time> <last command>" 1>&2
+        . "$(dirname "$0")"/elap.bash-v2 trap2
+    fi
+fi
 
 debug_print () {
     lvl="$1"
@@ -253,6 +237,11 @@ gcc_driver_optlines () {
     } | drop_descriptions
     # PROBLEM: --[no-]opt style is not expanded (do we need this? maybe for cc1?) No, seems not.
 }
+# EXPERIMENT: can we set the subshell name?
+# We use this for profiling
+setname () {
+    echo -n $1 > /proc/$BASHPID/comm
+}
 gcc_cc1_optlines () {
     local cc1="$1"
     # HACK: this chopping is probably the nastiest bit.
@@ -298,6 +287,10 @@ optlines_to_caselines () {
              /(([^=]*)=?)JARG$/ {s//(\1*) fullopt="$1"; canonopt="\2"; optarg="$( echo "\$1" | sed -E "s^\1^^" )"; inc=1 ;;/;p;d}
              /^$/          d
              /.*/          {s//(&)   fullopt="$1"; canonopt="&"; inc=1 ;;/;p;d}'
+    # FIXME: there seems to be a big performance incentive to put frequently-seen
+    # arguments higher in the list, so that scanning can skip more quickly to the end
+    # of the case statement. TEST THIS theory before putting time into doing anything
+    # clever here.
 }
 
 # use this with 'eval', having set $prefix, to declare
@@ -348,7 +341,9 @@ scan_generic () {
         eval debug_print 2  "${var_prefix}_args"'[$((${argcount}+1))]="$1"' 1>&2
         eval "${var_prefix}_args"'[$((${argcount}+1))]="$1"'
         $casefunc "$@"  # will set 'inc' and 'canonopt' for any option it handles, and maybe 'optarg'
-        if [[ $inc -eq 0 ]]; then debug_print 2 "Input file or option? \`$1'" 1>&2; case "$1" in
+        if [[ $inc -eq 0 ]]; then
+            debug_print 2 "Input file or option? \`$1'" 1>&2
+            case "$1" in
             (-) # stdin/stdout
                 # this is a filename -- do something with it
                 input_files_by_argposn[$realposn]="$1"
@@ -3686,11 +3681,38 @@ noop_cc1 () {
     done
 }
 
-gcc_cc1_optcases_plus_wrapper_optcases () {
+# Like gcc_cc1_optcases, but we also accept additional options specified via
+# the environment variable CC_IDENTIFY_ARGS.
+# Note that this variable fulfils two functions: it defines extra option arguments
+# which we scan here (using our "optline" JARG/SARG syntax)
+# and it specifies which options the inferior tool would like us to scan
+# for it. This is a bit of an abuse. In particular, if the tool wants us to
+# scan something, say "-I", then we will generate a completely redundant "-I"
+# case here. The goal of specifying it is so that we will set CC_IDENTIFIED_ARGS
+# giving the argument positions where it appears.
+# A valid word in CC_IDENTIFY_ARGS might not begin with '-'; if it doesn't,
+# it is considered to stand for input files. We filter these out here.
+
+identified_optlines () {
+    for w in $CC_IDENTIFY_ARGS; do
+        case $w in
+            (-*) echo $w ;;
+        esac
+    done
+}
+
+gcc_cc1_optcases_plus_tool_optcases () {
     inc=0
     gcc_driver_optcases "$@"
-    if [[ $inc -eq 0 ]] && [[ -n "$CPP_EXTRA_OPTS" ]]; then
-        eval "case \"\$1\" in `for w in $CPP_EXTRA_OPTS; do echo $w; done | optlines_to_caselines` esac"
+    if [[ $inc -eq 0 ]] && [[ -n "$CC_IDENTIFY_ARGS" ]]; then
+        # For each word that is an optline, write an optline.
+        # If it doesn't begin with '-' assume it denotes an input file.
+        # HMM. This feels wrong. Why do we want infile_caseline here?
+        # scan_generic is what does the infile handling.
+        
+        local infile_caseline="(*) input_files_by_argposn[\$realposn]=\"\$1\"; inc=1 ;;"
+        #eval "case \"\$1\" in `for w in $CC_IDENTIFY_ARGS; do case $w in (-*) echo $w | optlines_to_caselines ;; (*) echo $infile_caseline ;; esac; done` esac"
+        eval "case \"\$1\" in `identified_optlines | optlines_to_caselines` esac"
     fi
 }
 
@@ -3706,6 +3728,8 @@ lift_gcc_cc1_to_cc () {
     # ... our cc1 will see         cc1     -blah -blah -o -blah
     # and although the final '-blah' is safe, we will not know which of the other
     # two to lift.
+    local is_pp="$1"  # 1 if is_pp, 0 otherwise
+    shift
     prefix="cc_pp" eval "$declare_scan_outputs"
     declare -a ppargs
     scan_driver_pp $CC_DRIVER $CC_DRIVER_ARGS
@@ -3719,7 +3743,7 @@ lift_gcc_cc1_to_cc () {
     # pointless and will cause an empty filename error.
     prefix="pp_as_cc1" eval "$declare_scan_outputs"
     if [[ $pparg_ctr -gt 1 ]]; then
-        scan_generic gcc_cc1_optcases_plus_wrapper_optcases pp_as_cc1 \
+        scan_generic gcc_cc1_optcases_plus_tool_optcases pp_as_cc1 \
            "${cc1:-cc1}" "" "${ppargs[@]}"
     fi
     
@@ -3743,9 +3767,47 @@ lift_gcc_cc1_to_cc () {
     mf_argind="$(get_optargposn_greatest "gcc_cc1" "-MF" )"
     # echo "md, mf arginds: $md_argind, $mf_argind" 1>&2
     local inposn=1
+    local suppress_arg=0
     debug_print 2 "gcc_cc1_argcount is $gcc_cc1_argcount" 1>&2
+    # We use this shell function to do the output.
+    # It takes care of prefixing with -Xpreprocessor and also
+    # appending the outctr to CC_IDENTIFIED_ARGS if needed.
+    # Note that it does not advance inposn.
+    output_one () {
+        local arg="$1"
+        local arg_prefix="$2"
+        local originating_optstring=""
+        case "$arg_prefix" in
+            (?*)
+                outargs[$outctr]="$arg_prefix"
+                outctr=$(( $outctr + 1 ))
+            ;;&
+            (*)
+                outargs[$outctr]="$arg"
+                outctr=$(( $outctr + 1 ))
+            ;;
+        esac
+    }
+    # last_ ...? something to do with identified args
+    case_stmt="case \"\$1\" in `identified_optlines | optlines_to_caselines` esac"
     while [[ $inposn -le ${gcc_cc1_argcount} ]]; do
         arg="${gcc_cc1_args[$inposn]}"
+        # Is this arg one of the "identified" args?
+        # That means our inferior tool (say cilpp) wants us to tell it
+        # where in the command line it is, to save it from scanning for it.
+        # Since they were identified by an optstring (in CC_IDENTIFY_ARGS),
+        # we need to match the arg against the optstring.
+        inc=0; fullopt=""; canonopt="";
+        eval "$case_stmt"
+        # For now we remember the number of input arguments in this position
+        # that match an identified param; 0 means it's not identified.
+        # We will process
+        n_identified="$inc"
+        if [[ $n_identified -gt 0 ]]; then
+            fullopt_identified="$fullopt"
+            canonopt_identified="$canonopt"
+        fi
+        
         # If we have -MD,
         # and if this is -MF, or if it's -MD or -MMD but not the greatest md argind,
         # skip it and its argument
@@ -3773,8 +3835,10 @@ lift_gcc_cc1_to_cc () {
                 continue
             fi
             if [[ "$arg" == "-MD" ]] || [[ "$arg" == "-MMD" ]]; then
-                outargs[$outctr]="$arg"; outctr=$(( $outctr + 1 ))
-                outargs[$outctr]="-MF"; outctr=$(( $outctr + 1 ))
+                # FIXME: if -MD or -MMD or -MF are "identified" args, this needs reflecting
+                # here.
+                output_one "$arg"
+                output_one "-MF"
                 # What's the real -MF argument? If it comes later, it wins.
                 if [[ $inposn -lt ${mf_argind:-0} ]]; then
                     # the explicit -MF should win
@@ -3782,7 +3846,7 @@ lift_gcc_cc1_to_cc () {
                 else
                     mf_arg="${gcc_cc1_args[$(($inposn + 1))]}"
                 fi
-                outargs[$outctr]="$mf_arg"; outctr=$(( $outctr + 1 ))
+                output_one "$mf_arg"
                 inposn=$(( $inposn + 2 ))
                 continue
             fi
@@ -3809,7 +3873,14 @@ lift_gcc_cc1_to_cc () {
                 # It could be used to check that when the driver re-lowers to cc1 we get
                 # a compatible set of cc1 options as the one we lifted. FIXME: do this!
                 # It's possibly a good check. For now, put these back just for preprocessing.
-                arg_prefix="-Xpreprocessor"
+                if [[ $is_pp -eq 1 ]]; then
+                    arg_prefix="-Xpreprocessor"
+                else
+                    # We'd use -Xcompiler, but it doesn't exist.
+                    # We could delete the arg, but 'continue' would be wrong here
+                    # because our increment happens at the end of the loop body.
+                    suppress_arg=1
+                fi
             ;;
             (*)
                 # This is any other arg.
@@ -3850,26 +3921,34 @@ lift_gcc_cc1_to_cc () {
                 fi
             ;;
         esac
-        output_one () {
-            local arg="$1"
-            local arg_prefix="$2"
-            case "$arg_prefix" in
-                (?*)
-                    outargs[$outctr]="$arg_prefix"
-                    outctr=$(( $outctr + 1 ))
-                ;;&
-                (*)
-                    outargs[$outctr]="$arg"
-                    outctr=$(( $outctr + 1 ))
-                ;;
-            esac
-        }
-        output_one "$arg" "$arg_prefix"
-        for n in `seq $(( $inposn + 1 )) $(( $inposn + $inc - 1 ))`; do
-            output_one "${gcc_cc1_args[$n]}" "$arg_prefix"
-        done
+        if [[ $suppress_arg -eq 0 ]]; then
+            if [[ $n_identified -gt 0 ]]; then
+                # This means it matched a caseline, so let's update CC_IDENTIFIED_ARGS
+                if [[ -n "$arg_prefix" ]]; then
+                    # Use 'seq' with its FIRST INCREMENT LAST form
+                    seq="$( seq $outctr 2 $(( $outctr + ( 2 * $inc ) - 1 )) )"
+                else
+                    seq="$( seq $outctr $(( $outctr + $inc - 1 )) )"
+                fi
+                local tok="$( echo "$seq" | tr -s '[:blank:]' ',')$1"
+                # Remember that our indices need to come from the output space.
+                # Also I think we don't support identifying -MD or -MF, since we
+                # rewrote these above.
+                # We could modify output_one to build the comma-separated part of the
+                # "identified" token as it goes.
+                CC_IDENTIFIED_ARGS="${CC_IDENTIFIED_ARGS:+${CC_IDENTIFIED_ARGS} }$tok"
+            fi
+            # output the arg itself
+            output_one "$arg" "$arg_prefix"
+            # this will output zero or more additional args, also prefixed if necessary
+            for n in `seq $(( $inposn + 1 )) $(( $inposn + $inc - 1 ))`; do
+                output_one "${gcc_cc1_args[$n]}" "$arg_prefix"
+            done
+        fi
+        suppress_arg=0
         inposn=$(( $inposn + $inc ))
     done
+    export CC_IDENTIFIED_ARGS
 }
 detraditionalize_clang_if_needed () {
     outctr=1  # we start at position 1
@@ -3931,7 +4010,8 @@ case "$0" in
         # valid driver command.
         #driver="$( ps -p $PPID -o comm= )"
         if [[ -z "$CC_DRIVER" ]]; then
-            driver_fullcmd="$( ps -p $PPID -o cmd= )"
+            #driver_fullcmd="$( ps -p $PPID -o cmd= )"
+            driver_fullcmd="$( cat /proc/$PPID/cmdline | tr '\0' '\n' )"
             if looks_like_driver_command $driver_fullcmd ; then
                 read driver rest<<<"$driver_fullcmd"
                 debug_print 1 "driver binary might be $driver" 1>&2
@@ -4121,14 +4201,14 @@ case "$1" in
             # declare -a cc_options
             #write_cc_options_from_cc1_command "$@"
             declare -a outargs
-            lift_gcc_cc1_to_cc "$@"
+            lift_gcc_cc1_to_cc 1 "$@"
             do_exec ${CPP} "${outargs[@]}"
         else
             CC="${CC:-${CC_DRIVER} -S}"
             #declare -a cc_options
             #write_cc_options_from_cc1_command "$@"
             declare -a outargs
-            lift_gcc_cc1_to_cc "$@"
+            lift_gcc_cc1_to_cc 0 "$@"
             do_exec ${CC} "${outargs[@]}"
         fi
         ;;
