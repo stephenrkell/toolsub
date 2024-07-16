@@ -3539,18 +3539,21 @@ parse_assembler_command () {
 }
 
 # output comma-separated positions for one or more options,
-# as found in the scan-generated arrays identified by 'prefix'
+# as found in the scan-generated arrays identified by 'prefix'.
+# To minimise subprocesses in the following, we output an array
+# and then use IFS=',' to comma-separate it
 list_fulloptposns () {
     output=""
     local prefix="$1"
     shift
     declare -n optposns_by_fullopt=${prefix}_optposns_by_fullopt
     initargs="$@"
-    for n in {1..$#..1}; do
-        local arg="${!n}"
-        debug_print 3 "O ($prefix) considering $arg (${!optposns_by_fullopt[*]})" 1>&2
-        if [[ -v optposns_by_fullopt[$arg] ]]; then
-            output="${output:+${output},}$(echo "${optposns_by_fullopt[$arg]}" | tr -s '[:blank:]' ',' )"
+    declare -a posns
+    for n in `seq 1 $#`; do
+        #local arg="${!n}"
+        #debug_print 3 "O ($prefix) considering $arg (${!optposns_by_fullopt[*]})" 1>&2
+        if [[ -v optposns_by_fullopt[${!n}] ]]; then
+            output="${output:+${output},}$(echo "${optposns_by_fullopt[${!n}]}" | tr -s '[:blank:]' ',' )"
         fi
     done
     debug_print 2 "fulloptposns ($prefix) for ${initargs}: $output" 1>&2
@@ -3560,7 +3563,7 @@ get_fulloptposns () {
     local prefix="$1"
     shift
     declare -n optposns_by_fullopt=${prefix}_optposns_by_fullopt
-    for n in {1..$#..1}; do
+    for n in `seq 1 $#`; do
         local arg="${!n}"
         if [[ -v optposns_by_fullopt[$arg] ]]; then
             echo "${optposns_by_fullopt[$arg]}"
@@ -3575,7 +3578,7 @@ setarr_fulloptposns () {
     ctr=0
     shift
     declare -n optposns_by_fullopt=${prefix}_optposns_by_fullopt
-    for n in {1..$#..1}; do
+    for n in `seq 1 $#`; do
         local arg="${!n}"
         if [[ -v optposns_by_fullopt[$arg] ]]; then
             out[$ctr]="${optposns_by_fullopt[$arg]}"
@@ -3606,7 +3609,7 @@ list_optargposns () {
     shift
     declare -n optargposns_by_canonopt=${prefix}_optargposns_by_canonopt
     initargs="$@"
-    for n in {1..$#..1}; do
+    for n in `seq 1 $#`; do
         local arg="${!n}"
         debug_print 3 "A ($prefix) considering $arg (${!opgtargposns_by_canonopt[*]})" 1>&2
         if [[ -v optargposns_by_canonopt[$arg] ]]; then
