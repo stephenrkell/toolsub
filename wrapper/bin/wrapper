@@ -290,7 +290,16 @@ optlines_to_caselines () {
     # FIXME: there seems to be a big performance incentive to put frequently-seen
     # arguments higher in the list, so that scanning can skip more quickly to the end
     # of the case statement. TEST THIS theory before putting time into doing anything
-    # clever here.
+    # clever here. Initial experiments hoisting '-g' top the top of the case statement,
+    # and giving it lots of times on the command line, seem not to support this.
+    #
+    # Could we try replacing caselines with a generated awk script, which prints some
+    # shell syntax that we 'eval', setting fullarg and canonopt and inc and so on.
+    # It would be read by 'awk' only once for a long command. But NO... this doesn't
+    # work while it's only the loop body that we generate. We have the callback
+    # nastiness to worry about.
+    
+    # FIXME: use "${1/-prefix=/}" instead of 'sed -E'
 }
 
 # use this with 'eval', having set $prefix, to declare
@@ -3529,14 +3538,16 @@ parse_assembler_command () {
     done
 }
 
+# output comma-separated positions for one or more options,
+# as found in the scan-generated arrays identified by 'prefix'
 list_fulloptposns () {
     output=""
     local prefix="$1"
     shift
     declare -n optposns_by_fullopt=${prefix}_optposns_by_fullopt
     initargs="$@"
-    for n in `seq 1 $#`; do
-        arg="${!n}"
+    for n in {1..$#..1}; do
+        local arg="${!n}"
         debug_print 3 "O ($prefix) considering $arg (${!optposns_by_fullopt[*]})" 1>&2
         if [[ -v optposns_by_fullopt[$arg] ]]; then
             output="${output:+${output},}$(echo "${optposns_by_fullopt[$arg]}" | tr -s '[:blank:]' ',' )"
@@ -3545,6 +3556,34 @@ list_fulloptposns () {
     debug_print 2 "fulloptposns ($prefix) for ${initargs}: $output" 1>&2
     echo "$output"
 }
+get_fulloptposns () {
+    local prefix="$1"
+    shift
+    declare -n optposns_by_fullopt=${prefix}_optposns_by_fullopt
+    for n in {1..$#..1}; do
+        local arg="${!n}"
+        if [[ -v optposns_by_fullopt[$arg] ]]; then
+            echo "${optposns_by_fullopt[$arg]}"
+        fi
+    done
+}
+setarr_fulloptposns () {
+    local prefix="$1"
+    declare -a ${prefix}_fulloptposns
+    declare -n out=${prefix}_fulloptposns
+    local -n ctr=${prefix}_fulloptposns_count
+    ctr=0
+    shift
+    declare -n optposns_by_fullopt=${prefix}_optposns_by_fullopt
+    for n in {1..$#..1}; do
+        local arg="${!n}"
+        if [[ -v optposns_by_fullopt[$arg] ]]; then
+            out[$ctr]="${optposns_by_fullopt[$arg]}"
+            ctr=$(( $ctr + 1 ))
+        fi
+    done
+    #eval ${prefix}_fulloptposns_count=$ctr
+}
 list_optposns () {
     output=""
     local prefix="$1"
@@ -3552,7 +3591,7 @@ list_optposns () {
     declare -n optposns_by_canonopt=${prefix}_optposns_by_canonopt
     initargs="$@"
     for n in `seq 1 $#`; do
-        arg="${!n}"
+        local arg="${!n}"
         debug_print 3 "O ($prefix) considering $arg (${!optposns_by_canonopt[*]})" 1>&2
         if [[ -v optposns_by_canonopt[$arg] ]]; then
             output="${output:+${output},}$(echo "${optposns_by_canonopt[$arg]}" | tr -s '[:blank:]' ',' )"
@@ -3567,8 +3606,8 @@ list_optargposns () {
     shift
     declare -n optargposns_by_canonopt=${prefix}_optargposns_by_canonopt
     initargs="$@"
-    for n in `seq 1 $#`; do
-        arg="${!n}"
+    for n in {1..$#..1}; do
+        local arg="${!n}"
         debug_print 3 "A ($prefix) considering $arg (${!opgtargposns_by_canonopt[*]})" 1>&2
         if [[ -v optargposns_by_canonopt[$arg] ]]; then
             output="${output:+${output},}$(echo "${optargposns_by_canonopt[$arg]}" | tr -s '[:blank:]' ','  )"
@@ -3746,7 +3785,7 @@ lift_gcc_cc1_to_cc () {
         scan_generic gcc_cc1_optcases_plus_tool_optcases pp_as_cc1 \
            "${cc1:-cc1}" "" "${ppargs[@]}"
     fi
-    
+
     # We will assume any pparg whose appearance count matches across these two scans
     # should be -Xpreprocessor-qualified, i.e. does not pass through the driver as-is.
     
@@ -3778,7 +3817,7 @@ lift_gcc_cc1_to_cc () {
         local arg_prefix="$2"
         local originating_optstring=""
         case "$arg_prefix" in
-            (?*)
+            (?*) # non-empty
                 outargs[$outctr]="$arg_prefix"
                 outctr=$(( $outctr + 1 ))
             ;;&
@@ -3791,6 +3830,7 @@ lift_gcc_cc1_to_cc () {
     # last_ ...? something to do with identified args
     case_stmt="case \"\$1\" in `identified_optlines | optlines_to_caselines` esac"
     while [[ $inposn -le ${gcc_cc1_argcount} ]]; do
+        suppress_arg=0
         arg="${gcc_cc1_args[$inposn]}"
         # Is this arg one of the "identified" args?
         # That means our inferior tool (say cilpp) wants us to tell it
@@ -3897,11 +3937,33 @@ lift_gcc_cc1_to_cc () {
                 # Hence the test: "its pp count matches its cc1 count"
                 # Remember that our wrapper-substituted cpp (say) might accept arguments
                 # specific to itself, e.g. -real-cpp.
-                count_as_pp_opt="$( list_fulloptposns "pp_as_cc1" "$arg" | tr ',' '\n' | sed '/^$/ d' | wc -l )"
+                
+                # FIXME: perf bottleneck.
+                # If we delete the stuff below, scanning starts to dominate lifting.
+                # If we keep it in, lifting dominates scanning.
+                #
+                # We of course want a way to make scanning faster (use awk? see above)
+                # AND
+                # minimise subshells, esp. ones that do reiniting (i.e. I think not all subshells are equally bad)
+                # AND
+                # use {..} instead of `seq ...`, although FIXME this sometimes breaks things...
+                # I think it doesn't work with $(( )) inside?
+                # Can work around with 'eval "echo {$(( ))..$(( ))}"'
+                
+                count_as_pp_opt="$( get_fulloptposns "pp_as_cc1" "$arg"  | wc -l )"
+                #count_as_pp_opt="$( list_fulloptposns "pp_as_cc1" "$arg" | tr ',' '\n' | sed '/^$/ d' | wc -l )"
+                setarr_fulloptposns "pp_as_cc1" "$arg"
+                #echo "TEST count: $count_as_pp_opt $pp_as_cc1_fulloptposns_count" 1>&2
+                #count_as_pp_opt="$pp_as_cc1_fulloptposns_count"
                 # FIXME: don't just grep for the arg -- regex-escape it first
                 count_as_pp_infile="$( echo ${pp_as_cc1_input_files_by_argposn[*]} | \
                    grep "^$arg\$" | wc -l )"
-                count_as_cc1_opt="$( list_fulloptposns "gcc_cc1" "$arg" | tr ',' '\n'  | sed '/^$/ d' | wc -l )"
+                count_as_cc1_opt="$( get_fulloptposns "gcc_cc1" "$arg" | wc -l )"
+                #count_as_cc1_opt="$( list_fulloptposns "gcc_cc1" "$arg" | tr ',' '\n'  | sed '/^$/ d' | wc -l )"
+                setarr_fulloptposns "gcc_cc1" "$arg"
+                #echo "TEST count: $count_as_cc1_opt $gcc_cc1_fulloptposns_count" 1>&2
+                #count_as_cc1_opt="$gcc_cc1_fulloptposns_count"
+                # FIXME: this IFS trick doesn't work!
                 count_as_cc1_infile="$( echo ${gcc_cc1_input_files_by_argposn[*]} | \
                    grep "^$arg\$" | wc -l )"
                 # Counting would be foiled by canonicalisation,
