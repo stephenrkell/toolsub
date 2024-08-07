@@ -277,8 +277,8 @@ clang_optlines () {
     local clang="$1"
     # FIXME: haven't inspected this very carefully
     # but it seems to do the right thing
-    { LANG=C ${clang:-clang} --help; LANG=C ${clang:-clang} -cc1 --help; } | select_option_doclines | label_joined_args | \
-         label_separate_args | drop_descriptions
+    { LANG=C ${clang:-clang} --help; LANG=C ${clang:-clang} -cc1 --help; } | select_option_doclines | \
+    label_joined_args | label_separate_args | drop_descriptions
     echo "-cc1"
 }
 # Now are we ready to tackle scanning the command lines? Almost.
@@ -290,11 +290,13 @@ optlines_to_caselines () {
              /(([^=]*)=?)JARG$/ {s//(\1*) fullopt="$1"; canonopt="\2"; optarg="$( echo "\$1" | sed -E "s^\1^^" )"; inc=1 ;;/;p;d}
              /^$/          d
              /.*/          {s//(&)   fullopt="$1"; canonopt="&"; inc=1 ;;/;p;d}'
+    # FIXME: use "${1/-prefix=/}" instead of 'sed -E'
     # FIXME: there seems to be a big performance incentive to put frequently-seen
     # arguments higher in the list, so that scanning can skip more quickly to the end
     # of the case statement. TEST THIS theory before putting time into doing anything
     # clever here. Initial experiments hoisting '-g' top the top of the case statement,
-    # and giving it lots of times on the command line, seem not to support this.
+    # and giving it lots of times on the command line, seem not to support this, i.e.
+    # it's not any quicker to do this.
     #
     # Could we try replacing caselines with a generated awk script, which prints some
     # shell syntax that we 'eval', setting fullarg and canonopt and inc and so on.
@@ -302,7 +304,6 @@ optlines_to_caselines () {
     # work while it's only the loop body that we generate. We have the callback
     # nastiness to worry about.
     
-    # FIXME: use "${1/-prefix=/}" instead of 'sed -E'
 }
 awk_pre='
     BEGIN {
