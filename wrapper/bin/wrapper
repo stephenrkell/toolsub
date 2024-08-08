@@ -361,7 +361,7 @@ awk_pre='
               # Also remember arguments as a list of positions -- yes this is indirect, but
               # args may have spaces in them, which would mess up a space-separated list
               printf("existing_argposns_for_this_canonopt=\"${optargposns_by_canonopt[\"" canonopt "\"]}\"\n");
-              printf("optargposns_by_canonopt[\"" canonopt "\"]=\"${existing_argposns_for_this_canonopt:+${existing_argposns_for_this_canonopt} }" (realposn+1) "\"\n");
+              printf("optargposns_by_canonopt[\"" canonopt "\"]=\"${existing_argposns_for_this_canonopt:+${existing_argposns_for_this_canonopt} }" realposn "\"\n");
           }
       }
       realposn += inc;
@@ -387,7 +387,7 @@ awk_post='
         do_output();
         next;
     }
-    inc == 0 && $0 ~ /-.*/ { # unrecognised option
+    inc == 0 && $0 ~ /^-.*/ { # unrecognised option
         printf("WARNING: " var_prefix ": unrecognised optionlike argument " $0 "; assuming argumentless\n")>"/dev/stderr";
         if (issued_helpmsg == 0) {
             printf("Try: diff -u <( sed -n $'"'"'/# BEGIN GENERATED " var_prefix "_optawk/,$ p\\n/# END GENERATED " var_prefix "_optawk/ q'"'"' '"$0"' ) <( . '"$0"' && " var_prefix "_optlines | optlines_to_awk )\n")>"/dev/stderr";
@@ -1948,6 +1948,8 @@ gcc_cc1_optawk='# BEGIN GENERATED gcc_cc1_optawk
 /^--ansi$/ { fullopt=$0; canonopt="--ansi"; inc=1; do_output(fullopt); next; }
 /^--all-warnings$/ { fullopt=$0; canonopt="--all-warnings"; inc=1; do_output(fullopt); next; }
 # END GENERATED gcc_cc1_optawk
+# manually added cases
+/^(-g)([1-9])$/ { fullopt=$0; canonopt="-g"; optarg=gensub(/^(-g)([1-9])$/, "\\2", 1); inc=1; do_output(fullopt); next; }
 '
 
 clang_optawk='# BEGIN GENERATED clang_optawk
@@ -3291,6 +3293,34 @@ gcc_driver_optawk='# BEGIN GENERATED gcc_driver_optawk
 /^--help$/ { fullopt=$0; canonopt="--help"; inc=1; do_output(fullopt); next; }
 /^-###$/ { fullopt=$0; canonopt="-###"; inc=1; do_output(fullopt); next; }
 # END GENERATED gcc_driver_optawk
+# manually added ones (FIXME: report gcc bugs!):
+/^-wrapper$/ { fullopt=$0; canonopt="-wrapper"; snarfing_optarg=1; inc=2; next; }
+/^-no-integrated-cpp$/ { fullopt=$0; canonopt="-no-integrated-cpp"; inc=1; do_output(fullopt); next; }
+/^(-g)([1-9])$/ { fullopt=$0; canonopt="-g"; optarg=gensub(/^(-g)([1-9])$/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(-g)$/ { fullopt=$0; canonopt="-g"; inc=1; optarg=""; do_output(fullopt); next; }
+# remember that in the driver, unlike cc1, -MD takes no argument
+/^(-MD)$/  { fullopt=$0; canonopt="-MD"; optarg=""; do_output(fullopt); next; }
+/^(-MMD)$/  { fullopt=$0; canonopt="-MMD"; optarg=""; do_output(fullopt); next; }
+/^(-U)$/     { fullopt=$0; canonopt="-U"; snarfing_optarg=1; inc=2; next; }
+/^(-U)(.*)$/ { fullopt=$0; canonopt="-U"; optarg=gensub(/(-U)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(-Os)$/ { fullopt=$0; canonopt="-Os"; inc=1; optarg=""; do_output(fullopt); next; }
+/^(-Og)$/ { fullopt=$0; canonopt="-Og"; optarg=""; do_output(fullopt); next; }
+/^(-Ofast)$/ { fullopt=$0; canonopt="-Ofast"; optarg=""; do_output(fullopt); next; }
+/^(-O)(.*)$/ { fullopt=$0; canonopt="-O"; optarg=gensub(/(-O)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(-MT)$/     { fullopt=$0; canonopt="-MT"; snarfing_optarg=1; inc=2; next; }
+/^(-MQ)$/     { fullopt=$0; canonopt="-MQ"; snarfing_optarg=1; inc=2; next; }
+/^(-MP)$/ { fullopt=$0; canonopt="-MP"; inc=1; optarg=""; do_output(fullopt); next; }
+/^(-MM)$/ { fullopt=$0; canonopt="-MM"; inc=1; optarg=""; do_output(fullopt); next; }
+/^(-MG)$/ { fullopt=$0; canonopt="-MG"; inc=1; optarg=""; do_output(fullopt); next; }
+/^(-MF)$/     { fullopt=$0; canonopt="-MF"; snarfing_optarg=1; inc=2; next; }
+/^(-M)$/ { fullopt=$0; canonopt="-M"; inc=1; optarg=""; do_output(fullopt); next; }
+/^(-L)$/     { fullopt=$0; canonopt="-L"; snarfing_optarg=1; inc=2; next; }
+/^(-L)(.*)$/ { fullopt=$0; canonopt="-L"; optarg=gensub(/(-L)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(-I)(.*)$/ { fullopt=$0; canonopt="-I"; optarg=gensub(/(-I)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(-D)$/     { fullopt=$0; canonopt="-D"; snarfing_optarg=1; inc=2; next; }
+/^(-D)(.*)$/ { fullopt=$0; canonopt="-D"; optarg=gensub(/(-D)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(-A)$/     { fullopt=$0; canonopt="-A"; snarfing_optarg=1; inc=2; next; }
+/^(-A)(.*)$/ { fullopt=$0; canonopt="-A"; optarg=gensub(/(-A)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
 '
 # use this with 'eval', having set $prefix, to declare
 # all the arrays we set as output when scanning.
@@ -3298,6 +3328,7 @@ declare_scan_outputs=\
 $'declare    ${prefix}_argcount\n'\
 $'declare -a ${prefix}_args\n'\
 $'declare -a ${prefix}_input_files_by_argposn\n'\
+$'declare -A ${prefix}_input_files_index\n'\
 $'declare -a ${prefix}_canonopts_by_argposn\n'\
 $'declare -a ${prefix}_fullopts_by_argposn\n'\
 $'declare -A ${prefix}_optposns_by_canonopt\n'\
@@ -3324,6 +3355,7 @@ scan_generic () {
     declare -n argcount=${var_prefix}_argcount
     declare -n args=${var_prefix}_args
     declare -n input_files_by_argposn=${var_prefix}_input_files_by_argposn
+    declare -n input_files_index=${var_prefix}_input_files_index
     declare -n canonopts_by_argposn=${var_prefix}_canonopts_by_argposn
     declare -n fullopts_by_argposn=${var_prefix}_fullopts_by_argposn
     declare -n incs_by_argposn=${var_prefix}_incs_by_argposn
@@ -3346,6 +3378,7 @@ scan_generic () {
             (-) # stdin/stdout
                 # this is a filename -- do something with it
                 input_files_by_argposn[$realposn]="$1"
+                input_files_index["$1"]=1
             ;;
             (-*)    # unrecognised option
                 echo "WARNING: $var_prefix: unrecognised optionlike argument $1; assuming argumentless" 1>&2
@@ -3357,12 +3390,13 @@ scan_generic () {
                 canonopt="$1"; fullopt="$1"; inc=1
                 ;;
             ('')
-                echo "BUG?: empty filename" 1>&2
+                echo "BUG?: empty filename (scan_generic $casefunc $optlinefunc) at realposn $realposn" 1>&2
                 exit 1  # FIXME: detect empty filenames coming in, and don't BUG on those
                 ;;
             (*)
                 # this is a filename -- do something with it
                 input_files_by_argposn[$realposn]="$1"
+                input_files_index["$1"]=1
                 inc=1
             ;;
             esac
@@ -3371,6 +3405,7 @@ scan_generic () {
         # We just got "canonopt" and "optarg" -- do something with them.
         # We are keeping:
         # input_files_by_argposn  sparse array, one entry for each arg that is an input file
+        # input_files_index       associative array, stores '1' at every input file name, null otherwise
         # canonopts_by_argposn    sparse array, one entry for each arg that is an option, canonicalised
         # fullopts_by_argposn     sparse array, one entry for each arg that is an option, not canonicalised
         # incs_by_argposn         sparse array, one entry for whenever there is an 'inc' > 1 -- how many to increment argpos by to get to the next input file or opt
@@ -3438,10 +3473,10 @@ scan_generic () {
 }
 
 scan_generic_awk () {
-    local casefunc="$1"
+    local casefunc="$1"    # FIXME: ignored! we sed the optlinefunc instead
     local optlinefunc="$2"
     local var_prefix="$3"
-    local cmd="$4"
+    local cmd="$4"         # FIXME: ignored! I think we use var_prefix instead
     issued_helpmsg=0
     shift; shift; shift; shift
     # How can we share the logic that wraps around what is generated?
@@ -3451,6 +3486,7 @@ scan_generic_awk () {
     declare -n argcount=${var_prefix}_argcount
     declare -n args=${var_prefix}_args
     declare -n input_files_by_argposn=${var_prefix}_input_files_by_argposn
+    declare -n input_files_index=${var_prefix}_input_files_index
     declare -n canonopts_by_argposn=${var_prefix}_canonopts_by_argposn
     declare -n fullopts_by_argposn=${var_prefix}_fullopts_by_argposn
     declare -n incs_by_argposn=${var_prefix}_incs_by_argposn
@@ -3571,7 +3607,8 @@ combined_driver_optcases () {
 scan_gcc_driver () {
     local gcc="$1"
     shift
-    scan_generic_awk gcc_driver_optawk gcc_driver "${gcc:-gcc}" "$@"
+    scan_generic_awk gcc_driver_optawk gcc_driver_optlines gcc_driver "${gcc:-gcc}" "$@"
+    #scan_generic gcc_driver_optcases gcc_driver_optlines gcc_driver "${gcc:-gcc}" "$@"
 }
 # This is a special scanner that understands the "-Xpreprocessor" and "-Wp,"
 # arguments. What does it do? It should be like scan_generic but collect
@@ -3599,6 +3636,7 @@ scan_driver_pp () {
     # In combined_driver_optcases we also remember pparg_posns, i.e. we remember the pp-directed args
     # as a list of indices, pparg_posns.
     # FIXME: how can we do this in awk?
+    # Don't; do a pre-pass here, then just make a combined awk that does both optcases. Simples!
     scan_generic combined_driver_optcases combined_driver_optlines cc_pp "${driver:-cc}" "$@"
 }
 
@@ -3606,6 +3644,7 @@ scan_gcc_cc1 () {
     local cc1="$1"
     shift
     scan_generic_awk gcc_cc1_optawk gcc_cc1_optlines gcc_cc1 "${cc1:-cc1}" "$@"
+    #scan_generic gcc_cc1_optcases gcc_cc1_optlines gcc_cc1 "${cc1:-cc1}" "$@"
 }
 gcc_cc1_optcases () {
 #    gcc_cc1_argcount=0
@@ -6458,6 +6497,7 @@ scan_clang () {
     local clang="$1"
     shift
     scan_generic_awk clang_optawk clang_optlines clang "${clang:-clang}" "$@"
+    #scan_generic clang_optcases clang_optlines clang "${clang:-clang}" "$@"
 }
 # we want it to be possible to write wrappers
 # as shell functions, not just commands.
@@ -6770,8 +6810,17 @@ lift_gcc_cc1_to_cc () {
     declare -a ppargs
     declare -a pparg_posns
     pparg_ctr=1 # counter for the above array and the ppargs array -- start from 1
-    # FIXME: CC_DRIVER_ARGS is quoted. Do we need to unquote it? Seen suspicious "''" appearing....
-    scan_driver_pp $CC_DRIVER $CC_DRIVER_ARGS
+    # If we have no CC_DRIVER_ARGS, don't give "" to scan_driver_pp
+    if [[ -n "$CC_DRIVER_ARGS" ]]; then
+        scan_driver_pp $CC_DRIVER $CC_DRIVER_ARGS
+    else
+        # only warn if we're pp
+        if [[ -z "$CC_DRIVER_ARGS" ]] && [[ $is_pp -eq 1 ]]; then
+            echo "Warning: without CC_DRIVER_ARGS, may erroneously give driver cpp-specific option -foo not -Wp,-foo" 1>&2
+        else
+            debug_print 1 "CC_DRIVER_ARGS is $CC_DRIVER_ARGS"
+        fi
+    fi
     debug_print 1 "Got ppargs: ${ppargs[@]}" 1>&2           # This is just the pp-directed args
     debug_print 1 "Got cc_pp_args: ${cc_pp_args[@]}" 1>&2   # This is the entire arg array
     debug_print 1 "Got pparg_posns: ${pparg_posns[@]}" 1>&2 # This is the 1-based indices of pp-directed args
@@ -6782,7 +6831,8 @@ lift_gcc_cc1_to_cc () {
     # pointless and will cause an empty filename error.
     prefix="pp_as_cc1" eval "$declare_scan_outputs"
     if [[ $pparg_ctr -gt 1 ]]; then
-        # FIXME: still using scan_generic because we don't yet have awk for gcc_cc1_optcases_plus_identified_optcases
+        # FIXME: still using scan_generic because we don't yet have awk for
+        # gcc_cc1_optcases_plus_identified_optcases. What's hard about that? Nothing!
         scan_generic gcc_cc1_optcases_plus_identified_optcases gcc_cc1_optlines_plus_identified_optlines pp_as_cc1 \
            "${cc1:-cc1}" "${ppargs[@]}"
     fi
@@ -6805,7 +6855,7 @@ lift_gcc_cc1_to_cc () {
     outctr=1  # we start at position 1
     md_argind="$(get_optargposn_greatest "gcc_cc1" "-MD" "-MMD")"
     mf_argind="$(get_optargposn_greatest "gcc_cc1" "-MF" )"
-    # echo "md, mf arginds: $md_argind, $mf_argind" 1>&2
+    debug_print 3 "md, mf arginds: $md_argind, $mf_argind" 1>&2
     local inposn=1
     local suppress_arg=0
     debug_print 2 "gcc_cc1_argcount is $gcc_cc1_argcount" 1>&2
@@ -6831,7 +6881,11 @@ lift_gcc_cc1_to_cc () {
     # last_ ...? something to do with identified args
     case_stmt="case \"\$1\" in `identified_optlines | optlines_to_caselines` esac"
     # FIXME: WHY is this loop so SLOW?!
-    # It isn't the eval'd case statement.
+    # It isn't the eval'd case statement. It's in the "any other arg" part.
+    # Ditching the setarr_fulloptposns / get_fulloptposns, in favour of
+    # an open-coded -v test, has helped a bit. Ditching the | grep "$arg" | wc -l
+    # subshells, in favour of pp_as_cc1_input_files_index, has also helped
+    # quite a bit.
     while [[ $inposn -le ${gcc_cc1_argcount} ]]; do
         suppress_arg=0
         arg="${gcc_cc1_args[$inposn]}"
@@ -6865,6 +6919,7 @@ lift_gcc_cc1_to_cc () {
         # gcc -MD -MF lib/basename-lgpl.d
         # i.e. our explicit -MF argument needs to win if it comes later in the command.
         if [[ -n "$md_argind" ]]; then
+            debug_print 3 "Triggered special -MD handling at $inposn" 1>&2
             # We have an explicit -MD, so we will generate an -MF; skip this explicit -MF
             # but we will retrieve its argument if it wins over (appears later than) -MD
             if [[ "$arg" == "-MF" ]]; then
@@ -6893,6 +6948,7 @@ lift_gcc_cc1_to_cc () {
                 inposn=$(( $inposn + 2 ))
                 continue
             fi
+            debug_print 3 "Special -MD handling has nothing to do at $inposn" 1>&2
         fi
         # how many will we inc by?
         inc=${gcc_cc1_incs_by_argposn[$inposn]:-1}
@@ -6948,6 +7004,13 @@ lift_gcc_cc1_to_cc () {
                 # We run it for every argument. But it is just doing a single
                 # associative array access each time.
                 #
+                # The $[*] | grep | wc -l pipeline was adding quite a lot of time,
+                # so created 'input_files_index' as basically a hashset of input files.,
+                # FIXME: make this count the frequency of input files, not just 0 or 1;
+                # repeated input files occasionally mean something, e.g. in linker comands.
+                # This means our test -v and negation logic below needs to change.
+
+                #
                 # We of course want a way to make scanning faster (use awk? see above)
                 # AND
                 # minimise subshells, esp. ones that do reiniting (i.e. I think not all subshells are equally bad)
@@ -6958,19 +7021,24 @@ lift_gcc_cc1_to_cc () {
                 
                 #count_as_pp_opt="$( get_fulloptposns "pp_as_cc1" "$arg"  | wc -l )"
                 #count_as_pp_opt="$( list_fulloptposns "pp_as_cc1" "$arg" | tr ',' '\n' | sed '/^$/ d' | wc -l )"
-                setarr_fulloptposns "pp_as_cc1" "$arg"
+                #setarr_fulloptposns "pp_as_cc1" "$arg"
                 #echo "TEST count: $count_as_pp_opt $pp_as_cc1_fulloptposns_count" 1>&2
-                count_as_pp_opt="$pp_as_cc1_fulloptposns_count"
+                #count_as_pp_opt="$pp_as_cc1_fulloptposns_count"
+                [[ -v pp_as_cc1_optposns_by_fullopt[$arg] ]]; count_as_pp_opt=$(( ! $? ))
+
                 # FIXME: don't just grep for the arg -- regex-escape it first
-                count_as_pp_infile="$( IFS=$'\n'; echo ${pp_as_cc1_input_files_by_argposn[*]} | \
-                   grep "^$arg\$" | wc -l )"
+                #count_as_pp_infile="$( IFS=$'\n'; echo ${pp_as_cc1_input_files_by_argposn[*]} | \
+                #   grep "^$arg\$" | wc -l )"
+                count_as_pp_infile="${pp_as_cc1_input_files_index["$arg"]}"
                 #count_as_cc1_opt="$( get_fulloptposns "gcc_cc1" "$arg" | wc -l )"
                 #count_as_cc1_opt="$( list_fulloptposns "gcc_cc1" "$arg" | tr ',' '\n'  | sed '/^$/ d' | wc -l )"
-                setarr_fulloptposns "gcc_cc1" "$arg"
+                #setarr_fulloptposns "gcc_cc1" "$arg"
                 #echo "TEST count: $count_as_cc1_opt $gcc_cc1_fulloptposns_count" 1>&2
-                count_as_cc1_opt="$gcc_cc1_fulloptposns_count"
-                count_as_cc1_infile="$( IFS=$'\n'; echo ${gcc_cc1_input_files_by_argposn[*]} | \
-                   grep "^$arg\$" | wc -l )"
+                #count_as_cc1_opt="$gcc_cc1_fulloptposns_count"
+                [[ -v gcc_cc1_optposns_by_fullopt[$arg] ]]; count_as_cc1_opt=$(( ! $? ))
+                #count_as_cc1_infile="$( IFS=$'\n'; echo ${gcc_cc1_input_files_by_argposn[*]} | \
+                #   grep "^$arg\$" | wc -l )"
+                count_as_cc1_infile="${gcc_cc1_input_files_index["$arg"]}"
                 # Counting would be foiled by canonicalisation,
                 # so we are counting the "fullopt" positions.
                 # This works because the options really are passed through
@@ -7079,11 +7147,17 @@ case "$0" in
         if [[ -z "$CC_DRIVER" ]]; then
             #driver_fullcmd="$( ps -p $PPID -o cmd= )"
             driver_fullcmd="$( cat /proc/$PPID/cmdline | tr '\0' '\n' )"
+            # FIXME: we could check for a -wrapper option naming us. That would actually
+            # be a good filter for a "true" driver invocation. Use our own scanner to
+            # pull out the -wrapper option, of course.... Currently, looks_like_driver_command
+            # does a version of this check but does not use our own scanner.
             if looks_like_driver_command $driver_fullcmd ; then
-                read driver rest<<<"$driver_fullcmd"
+                # unusual 'read': '\n' is for word-splitting and
+                # using '\0' instead of newline ensures just one line
+                IFS=$'\n' read -r -d $'\0' driver rest<<<"$driver_fullcmd"
                 debug_print 1 "driver binary might be $driver" 1>&2
                 CC_DRIVER="$driver"
-                CC_DRIVER_ARGS="$( make_driver_argstring "$rest" )"
+                CC_DRIVER_ARGS="$( if [[ -n "$rest" ]]; then make_driver_argstring "$rest"; fi )"
             else
                 # What's a sanity check we can do on the parent process? For now just rule out the stupids...
                 # another approach might be to look at the whole parent command line and
@@ -7096,9 +7170,6 @@ case "$0" in
         fi
         export CC_DRIVER
         export CC_DRIVER_ARGS
-        if [[ -z "$CC_DRIVER_ARGS" ]]; then
-            echo "Warning: without CC_DRIVER_ARGS, cannot rewrite e.g. cpp-specific option -foo to -Wp,-foo (for driver)" 1>&2
-        fi
         # NOW WE continue with the script, after 'esac'; this is the only case that does so.
     ;;
     (*wrap) # assume the next argument is a driver command, and use -### to interrogate it,
@@ -7261,21 +7332,16 @@ case "$1" in
         fi
         if command_is_pp "gcc_cc1" "$@"; then
             CPP="${CPP:-${CC_DRIVER} -E}"
-            # How do we do this?
-            # 1. normalize away cc1 tricky cases  <-- sets norm_cc1_options
-            # 2. scan cc1
-            # 3. enlighten our CPP about the args it asked about
-            # 3. lift to driver as we assume our CPP requires?
-            #     or let it also tell us which it is?
-            # declare -a cc_options
-            #write_cc_options_from_cc1_command "$@"
             declare -a outargs
             lift_gcc_cc1_to_cc 1 "$@"
+            # CPP might be the driver (cc -E) or it might be a well-matched
+            # bona fide 'cpp' command... might it? Well, not in general... we lift to
+            # the driver command line language, so if the original driver command used
+            # "-Xpreprocessor" or "-Wp", we will re-create these in the lifted command.
+            # Most cpp options will just pass through, so it's rare to use -Wp etc.
             do_exec ${CPP} "${outargs[@]}"
         else
             CC="${CC:-${CC_DRIVER} -S}"
-            #declare -a cc_options
-            #write_cc_options_from_cc1_command "$@"
             declare -a outargs
             lift_gcc_cc1_to_cc 0 "$@"
             do_exec ${CC} "${outargs[@]}"
