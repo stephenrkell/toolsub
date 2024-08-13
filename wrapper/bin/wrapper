@@ -140,6 +140,7 @@ if [[ -n "$PROFILE_CC_WRAPPER" ]]; then
         . "$(dirname "$0")"/elap.bash-v2 trap2
     fi
     # FIXME: the use of awk means that profiling output is noised up
+    # ... as a workaround I have been doing 2>&1 | sed 's/\(awk[_a-z]*=\).*/\1(elided)/'
 fi
 
 debug_print () {
@@ -212,7 +213,7 @@ looks_like_driver_command () {
 # But "optargs" can also occur within "opts"; this is the "joined argument" case.
 # These terms ("separate" and "joined") are taken from the GCC documentation.
 
-# Here is how we scrape the compiler documentation to generate our big case statements.
+# Here is how we scrape the compiler documentation to generate our big awk programs.
 # Options end either with '='  or with ' ARGSPEC' where ARGSPEC is
 # something like '<arg>' or '{yes|no}' or '[...]' or exceptionally FILE
 # However, ARGSPECs can also be embedded into what looks like the option name,
@@ -305,9 +306,14 @@ clang_optlines () {
     label_joined_args | label_separate_args | drop_descriptions
     echo "-cc1"
 }
+
+
 # Now are we ready to tackle scanning the command lines? Almost.
-# Generate the shell code we need. We will paste it.
-# NOTE: we seldom use this any more, as awk is much faster
+# Generate the awk code we need. We will paste it into the script,
+# but the script also contains the logic for regenerating it.
+# We used to use generated shell script (case statements with lots of generated lines)
+# but awk is much faster. But we still generate the shell script in one place
+# (to process identified args) so we still need this function
 optlines_to_caselines () {
     # we sort in reverse order so that SARG comes before JARG comes before (no suffix)
     sort -r | uniq | \
@@ -316,16 +322,6 @@ optlines_to_caselines () {
              /^$/          d
              /.*/          {s//(&)   fullopt="$1"; canonopt="&"; inc=1 ;;/;p;d}'
     # FIXME: use "${1/-prefix=/}" instead of 'sed -E'
-    # FIXME: there seems to be a big performance incentive to put frequently-seen
-    # arguments higher in the list, so that scanning can skip more quickly to the end
-    # of the case statement. TEST THIS theory before putting time into doing anything
-    # clever here. Initial experiments hoisting '-g' top the top of the case statement,
-    # and giving it lots of times on the command line, seem not to support this, i.e.
-    # it's not any quicker to do this.
-    #
-    # Could we try replacing caselines with a generated awk script, which prints some
-    # shell syntax that we 'eval', setting fullarg and canonopt and inc and so on.
-    # It would be read by 'awk' only once for a long command.
 }
 awk_pre='
     BEGIN {
@@ -3374,12 +3370,11 @@ run_awkprog () {
 }
 
 scan_generic_awk () {
-    local casefunc="$1"    # FIXME: ignored! we sed the optlinefunc instead
-    local optlinefunc="$2"
-    local var_prefix="$3"
-    local cmd="$4"         # FIXME: ignored! I think we use var_prefix instead
+    local awkvar="$1"
+    local var_prefix="$2"
+    local cmd="$3"         # FIXME: ignored! I think we use var_prefix instead
     issued_helpmsg=0
-    shift; shift; shift; shift
+    shift; shift; shift
     # How can we share the logic that wraps around what is generated?
     # - the case stmt is its own function (name taken as an argument)
     # - inc is initially 0
@@ -3417,7 +3412,8 @@ scan_generic_awk () {
     declare -n optargs_by_argposn=${var_prefix}_optargs_by_argposn
 
     #cat >"$awkfile" <<<"${awk_pre}$( $optlinefunc | optlines_to_awk)${awk_post}${awk_output}"
-    declare -n optawk="$( echo "$optlinefunc" | sed 's/optlines/optawk/g' )"
+    declare -n optawk="$awkvar"
+    debug_print 1 "awk program ($awkvar) has $(echo "$optawk"  | wc -l ) option lines" 1>&2
     awkout="$( IFS=$'\n' echo_args "$@" | run_awkprog "$var_prefix" "${awk_pre}${optawk}${awk_post}${awk_output}" )"
     debug_print 1 "awk output was a program of $(echo "$awkout" | wc -l) lines" 1>&2
     eval "$awkout"
@@ -3434,7 +3430,7 @@ combined_driver_optawk="${gcc_driver_optawk}"$'\n'"${clang_optawk}"
 scan_gcc_driver () {
     local gcc="$1"
     shift
-    scan_generic_awk gcc_driver_optawk gcc_driver_optlines gcc_driver "${gcc:-gcc}" "$@"
+    scan_generic_awk gcc_driver_optawk gcc_driver "${gcc:-gcc}" "$@"
 }
 
 # The same as scanning a driver command line, but also recognise
@@ -3449,19 +3445,19 @@ scan_gcc_driver () {
 scan_driver_plus_identified () {
     local driver="$1"
     shift
-    scan_generic_awk combined_driver_optawk_plus_identified_optawk combined_driver_optlines_plus_identified_optlines \
+    scan_generic_awk combined_driver_optawk_plus_identified_optawk \
         driver_plus_identified "${driver:-cc}" "$@"
 }
 
 scan_gcc_cc1 () {
     local cc1="$1"
     shift
-    scan_generic_awk gcc_cc1_optawk gcc_cc1_optlines gcc_cc1 "${cc1:-cc1}" "$@"
+    scan_generic_awk gcc_cc1_optawk gcc_cc1 "${cc1:-cc1}" "$@"
 }
 scan_clang () {
     local clang="$1"
     shift
-    scan_generic_awk clang_optawk clang_optlines clang "${clang:-clang}" "$@"
+    scan_generic_awk clang_optawk clang "${clang:-clang}" "$@"
     #scan_generic clang_optcases clang_optlines clang "${clang:-clang}" "$@"
 }
 # we want it to be possible to write wrappers
@@ -3786,7 +3782,7 @@ lift_gcc_cc1_to_cc () {
 
     # we need already to have done this 'declare' stuff in the caller, or it won't be able to see the vars
     #prefix="gcc_cc1" eval "$declare_scan_outputs"
-    scan_generic_awk gcc_cc1_optcases_plus_identified_optcases gcc_cc1_optlines_plus_identified_optlines gcc_cc1 \
+    scan_generic_awk gcc_cc1_optawk_plus_identified_optawk gcc_cc1 \
            "${cc1:-cc1}" "$@"
     # are we pp?
     if command_is_pp gcc_cc1; then is_pp=1; else is_pp=0; fi
