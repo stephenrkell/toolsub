@@ -39,174 +39,261 @@
  * we pass through to cpp all our arguments except for any following "-o".
  * Then we run CIL and output to the intended -o file.
  *
- * FIXME: we have an identity crisis. Do we emulate 'cpp' or 'cc -E'?
- * Although the former sounds right, we are already forced to use the latter
- * in some cases, because we may not know which 'cpp' command to run, but
- * we can usually figure out the driver (albeit from parent-PID hackery
- * or from an explicit -driver option).
- * Even GNU 'make' defaults CPP to '$(CC) -E'. But why does this affect us?
- * In 'wrapper' we fall back on calling '$(CC) -E' in two cases:
- * - if we have CPPWRAP set but no CPP set (we do: {CPPWRAP} $driver -E); or
- * - if we have neither CPPWRAP nor CPP set (we do: $driver -E)
- * It seems that wrappers would rather assume they have a "cc" command than a "cpp"
- * command. But why?
- *
- * It's because we would not know which "cpp" command to delegate to.
- * By contrast, we can often guess the driver ("cc"-alike) and use that.
- * Once we have that, we know "$driver -E" is available.
+ * We have an identity crisis. Do we emulate 'cpp' or 'cc -E'?
+ * Although the former sounds right, the latter is better for wrapper scripts
+ * in many cases, because they may not know which 'cpp' command to run, but
+ * can usually figure out the driver (albeit from parent-PID hackery
+ * or from an explicit -driver option or CC_DRIVER variable or...).
+ * It may be significant also that GNU 'make' defaults CPP to '$(CC) -E'.
  * However, guessing the driver is always a hack too (using parent PID).
- * Can we "do both"? Not really; we have to pick a thing to run and run it.
- * We could however perhaps assume that the caller tells us.
- * Perhaps we could emulate only a common subset
- * of 'cc -E' and 'cpp'. Using 'wrapper' we could arrange this. The idea is
- * to centralise understanding of command-line options in 'wrapper', not in
- * this tool. For example, we could require that '-o', '-E' and '-fpass-*'
- * appear "first" (f.s.v.o.) before other options. Without this kind of assumption,
- * we have to understand the whole command line e.g. to avoid getting confused by
- * perversities like "-MF -o" where an earlier option's argument looks like
- * an option. There are already cases like "-D _FORTIFY_SOURCE".
  *
- * Does this assumption even work? What if the caller doesn't intend to pass
- * one of our options at all, but does use it as the argument to another option?
- * Then we will still be scanning rightwards for it and will mistakenly see it.
- * UNLESS we stop scanning at the first option we don't understand. That should
- * be enough: the options we don't understand will include the option to which the
- * ringer/decoy optionlike string is an argument.
+ * Can we "do both"? In short, yes. We have to pick a thing to run and run it, to do the
+ * preprocessing. But do we need to know *how* to invoke it? Not really. The caller tells us,
+ * by the arguments they pass! Whereas we used to accept -driver, now we accept -real-cpp.
+ * It can be "cpp" or "$driver -E" or anything else.
  *
- * Perhaps we should not pass the driver but the "real" command? That could
- * be "cpp" or "$driver -E" or anything else. We'd need to take a string
- * assumed to be IFS-separated command-line words.
- *
- * OK, so this might work:
- * - accept a '-real-cpp <string>' argument     instead of -driver
- * - the wrapper scripts will always use "$driver -E" as the -real-cpp, but we don't care
- * - we require that "-o" comes early
- *   what about -MD? tricky one... see below
- * - what other options are we sensitive to? well, "-std=" and "-x lang" -- we use
- *    these to guess the right suffix for a temporary file. Can we not simply use
- *    the suffix of the actual -o output file name? YES. ELIMINATE the fancy lang stuff.
- * - and then there's -plugin and -fpass-*
- *    ... I think our wrapper can detect these with -Wp, and guarantee to
- *    place them first.
- *
- * One test case: '-MD' has different semantics between 'cpp' and
- * 'cc -E' (separately from how it has even more-different semantics in 'cc1').
- * Does it really differ between 'cpp' and 'cc -E' in a way that affects us?
- * Short answer: no. Long answer: what do we need to do with "-MD"? With "cpp" it lacks a
- * filename argument but generates one, and requests that we output dependency information
- * there in addition to outputting the real output wherever it would ordinarily go.
- * Or one may use -M -MF to set the depfile name, but that suppresses preprocessing.
- * I THINK one may use "-MD -MF" and still get both kinds of output. YES, verified.
- * Can one use -MF with 'cpp'? Yes. If -M -MF <file> is used, the output of
- * preprocessing is suppressed. But if -MD -MF <file> is used, both are output. *
- * Our question is: can we be opaque to all this, i.e. just pass those options along
- * and not care? If our subprocess generates no output then it's probably OK.
- * I think the case we would care about is where "-o" is no longer naming a cpp output
- * file but rather something else that is non-empty. It can be a file that receives no
- * output (if -M -MF <file> is used) but that would be OK: our plugin runs on no output
- * and generates an empty output itself. I don't *think* "-o" can be modified into naming
- * a depfile with cpp, unlike with the driver. So it's our caller's problem! If you're
- * passing a driver as -real-cpp, don't pass "-M -MF", because you'll generate non-cpp-output
- * output to the .o file, and that's not a cpp command that we wrap. Oh, but what should you do?
- * Rewrite it to -M -MF <file> instead, I think, and choose <file> according to the cc (NOT cpp)
- * man page's rules. (and NOT -MD -MF file, since that will generate cpp output additionally.)
- * So the short summary is that we can ignore '-MD' but wrappers should beware:
- * -M -MF is not a real cpp command (even if we add -MD to those, in either order w.r.t. -M,
- * output is still suppressed).
+ * Our wrapper script will always use "$driver -E" as the -real-cpp, but as cilpp we don't
+ * care. We do need to get our own options; to be safe we stop scanning at the first option
+ * we don't understand (or '--'). But we can also use the CC_IDENTIFY_ARGS feature of the
+ * wrapper script: if it sets CC_IDENTIFIED_ARGS, it can tell us where to find our args at 
+ * any point in the command line.
  *)
 open Compiler_args
 open Unix
 open Feature
 
+(* Test whether a string matches a prefix... but instead of returning a
+ * boolean, return None if it doesn't and Some(suffix) if it does, i.e.
+ * returning the part of the string that follows the prefix. *)
+let matchesPrefix (prefix: string) (s: string) : string option =
+    if (String.length s > String.length prefix
+       && String.sub s 0 (String.length prefix) = prefix)
+    then Some(Str.string_after s (String.length prefix))
+    else None
+
+let matchesSuffix (suffix: string) (s: string) : string option =
+    if (String.length s > String.length suffix
+       && String.sub s (String.length s - String.length suffix) (String.length suffix) = suffix)
+    then Some(String.sub s 0 (String.length s - String.length suffix))
+    else None
+
+(* Convenience for forcing an option *)
+let really = function Some(optVal) -> optVal | None -> failwith "really None"
+
+(* FIXME: replicate shell semantics more properly *)
+let wordSplit str = String.split_on_char ' ' str
+
+let runCommand cmdFriendlyName argvList =
+    (*
+    let _ =
+    output_string Pervasives.stderr ("About to execute cpp: " ^
+        (List.fold_left (fun s -> fun arg -> (if s = "" then s else s ^ " ") ^ arg) "" argvList)
+        ^ "\n")
+    in
+    *)
+    (* FIXME: have we left the temporary fd open? caller needs to handle this *)
+    match fork () with
+        | 0 -> (try execvp (List.hd argvList) (Array.of_list argvList)
+            with Unix_error(err, _, _) ->
+                output_string Pervasives.stderr ("cannot exec " ^ cmdFriendlyName ^ ": " ^ (error_message err) ^ "\n");
+                exit 255
+          )
+        | childPid ->
+            let pid, status = wait () in
+            match status with
+                | WEXITED 255 -> ()
+                | WEXITED 0 -> ()
+                | WEXITED status ->
+                    failwith (cmdFriendlyName ^ " exited with nonzero code")
+                | WSIGNALED signal ->
+                    failwith (cmdFriendlyName ^ " killed by signal")
+                | WSTOPPED signal ->
+                    failwith (cmdFriendlyName ^ " stopped")
+
+(* These are our SARGs (options taking separate arguments) *)
 type cilpp_extra_arg = [
-    basic_extra_arg
+    `ArgNamingOutputFile
   | `ArgNamingPlugin
   | `ArgNamingRealCPP
   ]
+(* If we're run as 'cilpp-wrapper', we run the generic wrapper but with
+ * - CC_IDENTIFY_ARGS set to the above description of our arguments.
+ * - CPP set to us, possibly with a -real-cpp arg added...
+ *      ... using CC_DRIVER? Oh, but we don't have that yet!
+ *      Either replicate how we get it, or... turn this bit of code into a shell script.
+ *      The latter is actually pretty easy. Our wrapper script is sourceable.
+ *
+ *
+ *
+ * How do we locate the generic wrapper? Use CC_WRAPPER or else our dirname/wrapper.
+ *
+ * FIXME: want a similar treatment for ccwrap, i.e. cilpp-ccwrap will invoke the
+ * generic wrapcc with the right environment. Do we use CCWRAP or WRAPPER to
+ * locate the real script?
+ *)
+let actAsWrapper (realCilpp : string) =
+    let ourArgSpec = "-save-temps\n\
+-real-cppSARG\n\
+-pluginSARG\n\
+-fpass-JARG\n\
+-oSARG\n\
+--output=JARG" (* FIXME: what about --output SARG ? Is this accepted? YES. *)
+    in
+    putenv "CC_IDENTIFY_ARGS" ourArgSpec;
+    (* The purpose of acting as a wrapper is that we set up to run ourselves
+     * "as we'd most like to be invoked", even though we will still work in
+     * other ways e.g. even without CC_IDENTIFIED_ARGS. Same for CC_DRIVER: 
+     * if we have it, use it to set our real cpp, under the reasonable
+     * assumption that the options we're getting are appropriate to that
+     * driver (remember: we're running as a wrapper, on a 'lifted' command line!).
+     * That means we should set  CPP="us -real-cpp='/path/to/compiler/driver -E'"
+     * Unless we have CPP already? Then we should use that as our real CPP. *)
+    let explicitUCpp = try Some(Unix.getenv "CPP")
+                      with Not_found -> None
+    in
+    let defaultUCpp = try ((Unix.getenv "CC_DRIVER") ^ " -E") (* FIXME: use lists not space-sep *)
+                      with Not_found -> "cpp" (* this is also our default, so no need to give it as -real-cpp,
+                                               * but doing so doesn't hurt *)
+    in
+    putenv "CPP" ("'" ^ realCilpp ^ "' -real-cpp '" ^ (match explicitUCpp with 
+                                                         Some(ucpp) -> ucpp
+                                                       | None -> defaultUCpp ^ "'"));
+    let wrapperPath = try Unix.getenv "WRAPPER"
+                      with Not_found -> Filename.concat (Filename.dirname Sys.argv.(0)) "wrapper"
+    in
+    (* Don't use runCommand, because it forks; use execve *)
+    Array.set Sys.argv 0 wrapperPath;
+    Unix.execv wrapperPath Sys.argv (* on failure: will propagate Unix_error to toplevel *)
 
-let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
+let () =
+    if Sys.argv.(0) = "cilpp-wrapper" || None <> (matchesSuffix "/cilpp-wrapper" Sys.argv.(0)) then
+        actAsWrapper (let linkTarget = (Unix.readlink Sys.argv.(0)) in
+                      if Filename.is_relative linkTarget
+                      then Filename.concat (Filename.dirname Sys.argv.(0)) linkTarget
+                      else linkTarget)
+    else
+    let argList = Array.to_list Sys.argv in
+    (* We used to scan our own args. We no longer want to do this. How to get around
+     * the "identity crisis" (cpp versus cc -E) and our desire to accept "new" options
+     * like "-plugin" and "-real-cpp"? We can get the wrapper script to scan our
+     * arguments. We can implement a '--' option, since it is not a valid option to
+     * cpp/cc. We should stop our scan on '--' or the first unrecognised arg. For
+     * invocations without '--' or where our options appear to its right, we require
+     * our invoker to have done the scanning and tell us via CC_IDENTIFIED_ARGS. In turn,
+     * we (or rather our invoker's invoker) supply CC_IDENTIFY_ARGS using the JARG/SARG
+     * syntax we use in the wrapper script. That script will do the scanning and set
+     * CC_IDENTIFIED_ARGS accordingly, to something like "3,4-o 5-DBLAH=foo".
+     *
+     * How does the "invoker's invoker" thing work? I was imagining a 'cilpp-cflags'
+     * program that can take care of this.
+     *
+     * If we are being run as the driver, then our identified args may be prefixed with
+     * -Xpreprocessor, but the numbered ranges above will not include this (even if there
+     * is an -Xpreprocessor in the middle of a separate-arg option.
+     *
+     * This creates a problem: is "-real-cpp" cc-like or cpp-like? In the former case,
+     * we will have to keep the -Xpreprocessor, but in the latter case, we will not.
+     * This rather defeats our attempt at saying "it's for the caller to give us
+     * arguments that are well-matched with -real-cpp". EXCEPT IT DOESN'T: it's perfect!
+     * The wrapper script *does* give us cc-like arguments, so it needs to give us a
+     * cc-like real-cpp. So we never need to drop -Xpreprocessor ourselves. The only
+     * trick is that our arguments, like -plugin, might be confounded by it. So we
+     * always drop "-Xpreprocessor" when reading an extra arg. *)
+    let finished = ref false in
     let saveTemps = ref false in
+    let outputFile = ref None in
     let ppPluginsToLoadReverse = ref [] in
     let ppPassesToRunReverse = ref [] in
     let realCpp = ref None in
-    let readingExtraArg = ref None in
-    (* chunkedArgs is a list with exactly the same number of entries
-     * as the original arg list, but where adjacent options belong together,
-     * the earlier ones appear as [] and the completed chunk appears as [arg1; arg2] or whatever.
-     * As we go, we snarf various properties that interest us, and we
-     * gobble (replace with []) any arg that is private to us, i.e. that the real cpp doesn't grok.
-     * This is really the only crucial argument processing that we need to do here:
-     * pull out "-save-temps", "-plugin" and "-fpass-*". *)
-    let reChunkedArgs = List.mapi (fun i -> fun argChunk ->
-        match argChunk with
-          | ["-save-temps"] -> saveTemps := true; [] (* i.e. accept -Wp,-save-temps; compiler doesn't grok it*)
-          | ["-real-cpp"] -> (readingExtraArg := Some(`ArgNamingRealCPP); [])
-          | ["-plugin"] -> (readingExtraArg := Some(`ArgNamingPlugin); [])
-          | [s] when None <> matchesPrefix "-fpass-" s ->
-                let passName = really (matchesPrefix "-fpass-" s) in
-                ppPassesToRunReverse := passName :: !ppPassesToRunReverse; []
-          | [] -> []
-          | [arg] -> (
-            let wasReadingExtraArg = !readingExtraArg in
-            readingExtraArg := None;
-            match wasReadingExtraArg with
-                None -> argChunk (* i.e. no-op *)
-              | Some(`ArgNamingPlugin) -> ppPluginsToLoadReverse := arg :: !ppPluginsToLoadReverse; []
-              | Some(`ArgNamingRealCPP) -> realCpp := Some(arg); []
-           )
-          | _ -> ( (* This case matches non-singleton lists i.e. already-formed chunks *)
-            let wasReadingExtraArg = !readingExtraArg in
-                readingExtraArg := None;
-                if None <> wasReadingExtraArg then
-                (* This means we are trying to form a chunk, given the preceding argument,
-                 * but instead we saw something already chunked-up. Flag an error. *)
-                failwith ""
-                else argChunk
-            )
-    ) argChunks
-    in
-    (* What we don't do is identify which arguments denote input files.
-     * We'd like to guess the right suffix for a temporary file, but this
-     * is challenging. Luckily we insist on either -driver or -std=, and
-     * these are enough -- but don't forget -x lang if we saw it. FIXME:
-     * testing for driver names is really gross. Can we really not find
-     * the input filename? Or at least make a guess and use it instead
-     * of hardcoded "c" below? *)
-    let cppCommandPrefix, guessedLang = guessCppCommandAndLang basicInfo !realCpp in
-    let suffixOfLang l = match l with
-        "c++" -> "ii"
-      | "c" -> "i" (* FIXME: other languages are possible *)
-      | _ -> failwith (l ^ " is not a language")
+    let readingExtraArg : cilpp_extra_arg option ref = ref None in
+    let stripPositions = ref [0] (* always strip argv[0] *) in
+    List.iteri (fun i -> fun arg ->
+        let stripThisOne = fun () -> stripPositions := i :: !stripPositions; () in
+        let stripNextOne = fun () -> stripPositions := (i+1) :: !stripPositions; () in
+        match arg with
+        | _  when !finished -> ()
+        | "-o" -> (readingExtraArg := Some(`ArgNamingOutputFile);
+                   stripThisOne (); ())
+        | "--output" -> (readingExtraArg := Some(`ArgNamingOutputFile);
+                   stripThisOne (); ())
+        | s when None <> matchesPrefix "--output=" s ->
+              let outputFileName = really (matchesPrefix "--output=" s) in
+              outputFile := Some(outputFileName); stripThisOne (); ()
+            (* PROBLEM: how to distinguish a -save-temps directed at us
+             * versus a -save-temps directed at the real cpp? i.e. do we stripThisOne () ?
+             * A plain preprocess-only invocation will not generate any temps, so we are
+             * fine to strip it.... *)
+        | "-save-temps" -> saveTemps := true; stripThisOne (); () (* i.e. accept -Wp,-save-temps *)
+            (* ... but in general we can't assume our args are not understood by the underlying
+             * tool. FIXME: this seems like a problem, for any option that could apply to both
+             * independently. We're perhaps a bit lucky that -save-temps is a degenerate case? *)
+
+            (* How does "-real-cpp" get set in a "normal" use case?
+             * If run via our wrapper mode (see argv check above),
+             * we will run WRAPPER which will run us, i.e. the compiler
+             * driver is somewhere above us in the process tree. But who
+             * scrapes its options? Well, whoever is setting
+             *     CPP=us
+             * should really set
+             *     CPP="us -real-cpp='/path/to/compiler/driver -E'"
+             * ... I think? *)
+        | "-real-cpp" -> (readingExtraArg := Some(`ArgNamingRealCPP);
+                          stripThisOne (); stripNextOne(); ())
+        | "-plugin" -> (readingExtraArg := Some(`ArgNamingPlugin);
+                        stripThisOne (); stripNextOne (); ())
+        | s when None <> matchesPrefix "-fpass-" s ->
+              let passName = really (matchesPrefix "-fpass-" s) in
+              ppPassesToRunReverse := passName :: !ppPassesToRunReverse;
+              stripThisOne (); ()
+        | "--" -> finished := true; stripThisOne (); () (* Explicit end of our args, so terminate *)
+        | "-Xpreprocessor" when None = !readingExtraArg ->
+              stripThisOne (); ()
+        | arg ->
+              let wasReadingExtraArg = !readingExtraArg in
+              readingExtraArg := None;
+              match wasReadingExtraArg with
+                  None -> (finished := true; ()) (* we don't recognise this opt, and it's not an SARG, so terminate *)
+                | Some(`ArgNamingPlugin) -> ppPluginsToLoadReverse := arg :: !ppPluginsToLoadReverse; ()
+                | Some(`ArgNamingRealCPP) -> realCpp := Some(arg); ()
+                | Some(`ArgNamingOutputFile) -> outputFile := Some(arg); ()
+    ) argList
+    ;
+    (* Now process our CC_IDENTIFIED_ARGS env var, possibly overriding the above.
+     * The env var should take precedence because there's a certain partialness
+     * in the above approach to scanning: we give up when we see something we don't
+     * recognise. If the caller has set options in our env var
+     * specially, always use that because the wrapper knows these. *)
+    (* FIXME: do this *)
+    
+    (* Can we run the real cpp now? We need a new tmpfile for the output. This should
+     * have the same suffix as our output file. If we're run from the driver we should
+     * always have a named output file... only '-' is a problem. *)
+    let maybeSuffix = match !outputFile with
+        None -> None
+      | Some(outputFileName) ->
+             (* same as output file's; else assume '.i'? this is a bit nasty *)
+             match String.rindex_opt outputFileName '.' with
+                 None -> (* hmm, no suffix *) None
+               | Some(n) -> Some(String.sub outputFileName n ((String.length outputFileName) - n))
     in
     let (newTempFd, newTempName) =
-        let suffix = if maybeSuffix <> None then really maybeSuffix else suffixOfLang guessedLang
-        in mkstemps ("/tmp/tmp.XXXXXX.cpp." ^ suffix) (String.length ".cpp." + String.length suffix)
+        let suffix = if maybeSuffix <> None then really maybeSuffix else ".i"
+        in mkstemps ("/tmp/tmp.XXXXXX.cilpp" ^ suffix) (String.length ".cilpp" + String.length suffix)
     in
-    let rewrittenArgs = List.flatten (List.mapi (fun i -> fun argChunk ->
-        if i = 0 then [] (* we fill "cpp" or whatever from cppCommandPrefix *) else
-        match argChunk with
-          | ["-o"; filename] ->  ["-o"; newTempName]
-          | _ -> argChunk) reChunkedArgs)
-      @ ( (* we might not have seen "-o" -- ensure there is a -o argument *)
-      match basicInfo.minus_o_pos with
-        None -> (* there was no -o, so add one *) [ "-o"; newTempName ]
-      | _ -> [])
+    (* Rewrite args. This will strip any arguments that only we understand,
+     * and drop '-o' if it existed. *)
+    let strippedArgs = List.flatten (List.mapi (fun i -> fun arg ->
+        if List.mem i !stripPositions then [] else [arg]
+    ) argList)
     in
-    runCommand (* 'cpp' here is used only in error messages... *) "cpp" (cppCommandPrefix @ rewrittenArgs);
-    (newTempName, basicInfo.output_file, !saveTemps, List.rev !ppPluginsToLoadReverse, List.rev !ppPassesToRunReverse)
-
-let () =
-    let argList = Array.to_list Sys.argv in
-    let (argChunks, basicInfo) = scanAndChunkCppArgs argList in
-    if basicInfo.suppress_ppout then
-        (* the command doesn't generate any preprocessed output, so we have nothing
-         * to do... just run the original command. This should arguably get filtered
-         * out in the wrapper scripts, so that cilpp does not have to handle it,
-         * i.e. an extension of just handling vanilla "cc -E" or "cpp" invocations. *)
-         runCommand "cpp" (* <-- only used in error messages *) argList
-    else
-    let (newTempName, originalOutfile, saveTemps, ppPluginsToLoad, ppPassesToRun)
-     = runCppDivertingToTempFile (Some "i") argChunks basicInfo in
+    let newArgs =
+        (match !realCpp with Some(argString) -> wordSplit argString | None -> ["cpp"])
+        @ strippedArgs @ ["-o"; newTempName]
+    in
+    runCommand (* 'cpp' here is used only in error messages... *) "cpp" newArgs
+    ;
+    let ppPluginsToLoad = List.rev !ppPluginsToLoadReverse in
+    let ppPassesToRun = List.rev !ppPassesToRunReverse in
     (* Okay, run CIL; we need the post-preprocessing line directive style *)
     Cil.lineDirectiveStyle := Some Cil.LinePreprocessorOutput;
     (* We have to use logical operators to avoid breaking code that does -Werror=format-string
@@ -249,7 +336,7 @@ let () =
     Cil.printerForMaincil := Cil.defaultCilPrinter;
     (* We are not printing for CIL input *)
     Cil.print_CIL_Input := false;
-    let (chan, str) = match originalOutfile with
+    let (chan, str) = match !outputFile with
             None -> Pervasives.stdout, "(stdout)"
           | Some(fname) -> (Pervasives.open_out fname, fname)
     in
@@ -257,5 +344,5 @@ let () =
     in
     let status = if !Errormsg.hadErrors then 1 else 0 in
     (* delete temporary file unless -save-temps *)
-    (if saveTemps then () else Unix.unlink newTempName;
+    (if !saveTemps then () else Unix.unlink newTempName;
     exit status)
