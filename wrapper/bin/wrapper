@@ -197,9 +197,14 @@ looks_like_driver_command () {
     esac
     while shift || break; do case "$1" in
         ('-wrapper')
-            if [[ -n "$(readlink -f "$2")" ]] && \
-               [[ "$(readlink -f "$2" )" == "$(readlink -f "$our_filename")" ]]; then
+            if [[ -n "$(readlink -f "$2")" ]] 
+               #&& \
+               #[[ "$(readlink -f "$2" )" == "$(readlink -f "$our_filename")" ]]; then
+               then
                return 0  # definitely a wrapper
+               # FIXME: what about an alternative wrapper that calls us?
+               # We should use our own option scanner for the driver.
+               # For now, I just commented out the readlink check.
             fi
             ;;
         (*) ;;
@@ -266,7 +271,8 @@ gcc_driver_optlines () {
     # PROBLEM: --[no-]opt style is not expanded (do we need this? maybe for cc1?) No, seems not.
 }
 # EXPERIMENT: can we set the subshell name?
-# We use this for profiling
+# We want to use this for profiling with 'ptreetime', so we don't get a million 'bash' processes.
+# Hmm, OK, doesn't seem to work....
 setname () {
     echo -n $1 > /proc/$BASHPID/comm
 }
@@ -307,12 +313,11 @@ clang_optlines () {
     echo "-cc1"
 }
 
-
 # Now are we ready to tackle scanning the command lines? Almost.
 # Generate the awk code we need. We will paste it into the script,
 # but the script also contains the logic for regenerating it.
 # We used to use generated shell script (case statements with lots of generated lines)
-# but awk is much faster. But we still generate the shell script in one place
+# but awk is much faster. But we still generate some shell script in one place
 # (to process identified args) so we still need this function
 optlines_to_caselines () {
     # we sort in reverse order so that SARG comes before JARG comes before (no suffix)
@@ -4114,6 +4119,49 @@ detraditionalize_clang_if_needed () {
     done
 }
 
+ensure_driver_best_guess () {
+    # If we're run via -wrapper, we can guess the driver from the parent process.
+    # This screws with testing, e.g. a workflow where the human uses -### and then
+    # tries to run the wrapper commands directly. In that case, the human must
+    # set CC_DRIVER and this function will never be called. We have a failsafe
+    # against being run from a shell, just in case. But guessing a plausible
+    # driver command is hard, because something as simple as "cc file.c" is a
+    # valid driver command.
+    #driver="$( ps -p $PPID -o comm= )"
+    if [[ -z "$CC_DRIVER" ]]; then
+        #driver_fullcmd="$( ps -p $PPID -o cmd= )"
+        driver_fullcmd="$( cat /proc/$PPID/cmdline | tr '\0' '\n' )"
+        # FIXME: we could check for a -wrapper option naming us. That would actually
+        # be a good filter for a "true" driver invocation. Use our own scanner to
+        # pull out the -wrapper option, of course.... Currently, looks_like_driver_command
+        # does a version of this check but does not use our own scanner.
+        if looks_like_driver_command $driver_fullcmd ; then
+            # unusual 'read': '\n' is for word-splitting and
+            # using '\0' instead of newline ensures just one line
+            IFS=$'\n' read -r -d $'\0' driver rest<<<"$driver_fullcmd"
+            debug_print 1 "driver binary might be $driver" 1>&2
+            CC_DRIVER="$driver"
+            # remember that 'rest' now contains newline-separated words, not quoted
+            CC_DRIVER_ARGS="$( if [[ -n "$rest" ]]; then make_driver_argstring <<<"$rest"; fi )"
+        else
+            # What's a sanity check we can do on the parent process? For now just rule out the stupids...
+            # another approach might be to look at the whole parent command line and
+            # test whether it's a plausible compiler command, and insist on CC_DRIVER if
+            # we don't think it is plausible.
+            # One test would be whether it has "-wrapper" in it!
+            echo "Bailing as could not guess driver (parent command: $driver_fullcmd)" 1>&2
+            exit 1
+        fi
+    fi
+    export CC_DRIVER
+    export CC_DRIVER_ARGS
+}
+
+# FIXME: check directly if we're being sourced, and return now if so?
+# Probably comparing "$0" to "${BASH_SOURCE[0]}" is the way to go.
+# Then maybe we should just run the above code? Oh, but that's not
+# right for all cases in the case statement below.
+
 case "$0" in
     (*cflags|*cppflags|*cxxflags)
         /bin/echo -no-integrated-cpp -wrapper "$(readlink -f "$(dirname "$0")")"/wrapper
@@ -4124,41 +4172,8 @@ case "$0" in
         exit 0
     ;;
     (*wrapper) # silently continue, i.e. actually act as a "-wrapper wrapper" command
-        # If we're run via -wrapper, we can guess the driver from the parent process.
-        # This screws with testing, e.g. a workflow where the human uses -### and then
-        # tries to run the wrapper commands directly. In that case, the human must
-        # set CC_DRIVER and this function will never be called. We have a failsafe
-        # against being run from a shell, just in case. But guessing a plausible
-        # driver command is hard, because something as simple as "cc file.c" is a
-        # valid driver command.
-        #driver="$( ps -p $PPID -o comm= )"
-        if [[ -z "$CC_DRIVER" ]]; then
-            #driver_fullcmd="$( ps -p $PPID -o cmd= )"
-            driver_fullcmd="$( cat /proc/$PPID/cmdline | tr '\0' '\n' )"
-            # FIXME: we could check for a -wrapper option naming us. That would actually
-            # be a good filter for a "true" driver invocation. Use our own scanner to
-            # pull out the -wrapper option, of course.... Currently, looks_like_driver_command
-            # does a version of this check but does not use our own scanner.
-            if looks_like_driver_command $driver_fullcmd ; then
-                # unusual 'read': '\n' is for word-splitting and
-                # using '\0' instead of newline ensures just one line
-                IFS=$'\n' read -r -d $'\0' driver rest<<<"$driver_fullcmd"
-                debug_print 1 "driver binary might be $driver" 1>&2
-                CC_DRIVER="$driver"
-                # remember that 'rest' now contains newline-separated words, not quoted
-                CC_DRIVER_ARGS="$( if [[ -n "$rest" ]]; then make_driver_argstring <<<"$rest"; fi )"
-            else
-                # What's a sanity check we can do on the parent process? For now just rule out the stupids...
-                # another approach might be to look at the whole parent command line and
-                # test whether it's a plausible compiler command, and insist on CC_DRIVER if
-                # we don't think it is plausible.
-                # One test would be whether it has "-wrapper" in it!
-                echo "Bailing as could not guess driver (parent command: $driver_fullcmd)" 1>&2
-                exit 1
-            fi
-        fi
-        export CC_DRIVER
-        export CC_DRIVER_ARGS
+        ensure_driver_best_guess
+        # Now we have CC_DRIVER and CC_ARGS (or have bailed if we couldn't get them)
         # NOW WE continue with the script, after 'esac'; this is the only case that does so.
     ;;
     (*wrap) # assume the next argument is a driver command, and use -### to interrogate it,
@@ -4261,7 +4276,9 @@ case "$0" in
     (real-ld)
         # A neat trick for wrapping ld within collect2... see below.
         # FIXME: snarf our default 'ld' the same way collect2 does it,
-        # since this 'real-ld' thing is specific to collect2.
+        # rather than just using ${LD:-ld}.
+        # (Note that this whole 'real-ld' thing is specific to collect2,
+        # so we don't lose any generality by doing this.)
         ${LD:-ld} "$@"
         status=$?
         exit $status
@@ -4313,10 +4330,11 @@ case "$1" in
             # the driver command line language, so if the original driver command used
             # "-Xpreprocessor" or "-Wp", we will re-create these in the lifted command.
             # Most cpp options will just pass through, so it's rare to use -Wp etc.
-            do_exec ${CPP} "${outargs[@]}"
+            # Use eval because CPP/CC may be quoted
+            eval do_exec ${CPP} "${outargs[@]}"
         else
             CC="${CC:-${CC_DRIVER} -S}"
-            do_exec ${CC} "${outargs[@]}"
+            eval do_exec ${CC} "${outargs[@]}"
         fi
         ;;
     (*/clang)
