@@ -62,5 +62,10 @@ cilpp: compiler_args.cmx cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
 	$(OCAMLFIND) ocamlc -o "$@" $(OCAMLFLAGS) -a $+
 
 clean:
+	rm -f cilpp-wrapper
 	rm -f *.o *.cmxa *.cmx *.cmo *.cmxs
 	rm -f cilpp
+
+# FIXME: add some quick self-tests of our wrapping mechanism(s)
+#.PHONY: test
+#	gcc -wrapper `pwd`/cilpp-wrapper 

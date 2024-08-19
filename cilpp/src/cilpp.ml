@@ -62,6 +62,11 @@ open Compiler_args
 open Unix
 open Feature
 
+let debug_level : int = int_of_string (Sys.getenv "DEBUG_CC")
+
+let debug_println level str = if level < debug_level then ()
+    else output_string Pervasives.stderr (str ^ "\n")
+    
 (* Test whether a string matches a prefix... but instead of returning a
  * boolean, return None if it doesn't and Some(suffix) if it does, i.e.
  * returning the part of the string that follows the prefix. *)
@@ -116,63 +121,11 @@ type cilpp_extra_arg = [
   | `ArgNamingPlugin
   | `ArgNamingRealCPP
   ]
-(* If we're run as 'cilpp-wrapper', we run the generic wrapper but with
- * - CC_IDENTIFY_ARGS set to the above description of our arguments.
- * - CPP set to us, possibly with a -real-cpp arg added...
- *      ... using CC_DRIVER? Oh, but we don't have that yet!
- *      Either replicate how we get it, or... turn this bit of code into a shell script.
- *      The latter is actually pretty easy. Our wrapper script is sourceable.
- *
- *
- *
- * How do we locate the generic wrapper? Use CC_WRAPPER or else our dirname/wrapper.
- *
- * FIXME: want a similar treatment for ccwrap, i.e. cilpp-ccwrap will invoke the
- * generic wrapcc with the right environment. Do we use CCWRAP or WRAPPER to
- * locate the real script?
+(* 
  *)
-let actAsWrapper (realCilpp : string) =
-    let ourArgSpec = "-save-temps\n\
--real-cppSARG\n\
--pluginSARG\n\
--fpass-JARG\n\
--oSARG\n\
---output=JARG" (* FIXME: what about --output SARG ? Is this accepted? YES. *)
-    in
-    putenv "CC_IDENTIFY_ARGS" ourArgSpec;
-    (* The purpose of acting as a wrapper is that we set up to run ourselves
-     * "as we'd most like to be invoked", even though we will still work in
-     * other ways e.g. even without CC_IDENTIFIED_ARGS. Same for CC_DRIVER: 
-     * if we have it, use it to set our real cpp, under the reasonable
-     * assumption that the options we're getting are appropriate to that
-     * driver (remember: we're running as a wrapper, on a 'lifted' command line!).
-     * That means we should set  CPP="us -real-cpp='/path/to/compiler/driver -E'"
-     * Unless we have CPP already? Then we should use that as our real CPP. *)
-    let explicitUCpp = try Some(Unix.getenv "CPP")
-                      with Not_found -> None
-    in
-    let defaultUCpp = try ((Unix.getenv "CC_DRIVER") ^ " -E") (* FIXME: use lists not space-sep *)
-                      with Not_found -> "cpp" (* this is also our default, so no need to give it as -real-cpp,
-                                               * but doing so doesn't hurt *)
-    in
-    putenv "CPP" ("'" ^ realCilpp ^ "' -real-cpp '" ^ (match explicitUCpp with 
-                                                         Some(ucpp) -> ucpp
-                                                       | None -> defaultUCpp ^ "'"));
-    let wrapperPath = try Unix.getenv "WRAPPER"
-                      with Not_found -> Filename.concat (Filename.dirname Sys.argv.(0)) "wrapper"
-    in
-    (* Don't use runCommand, because it forks; use execve *)
-    Array.set Sys.argv 0 wrapperPath;
-    Unix.execv wrapperPath Sys.argv (* on failure: will propagate Unix_error to toplevel *)
-
 let () =
-    if Sys.argv.(0) = "cilpp-wrapper" || None <> (matchesSuffix "/cilpp-wrapper" Sys.argv.(0)) then
-        actAsWrapper (let linkTarget = (Unix.readlink Sys.argv.(0)) in
-                      if Filename.is_relative linkTarget
-                      then Filename.concat (Filename.dirname Sys.argv.(0)) linkTarget
-                      else linkTarget)
-    else
-    let argList = Array.to_list Sys.argv in
+    let argArr = Sys.argv in
+    let argList = Array.to_list argArr in
     (* We used to scan our own args. We no longer want to do this. How to get around
      * the "identity crisis" (cpp versus cc -E) and our desire to accept "new" options
      * like "-plugin" and "-real-cpp"? We can get the wrapper script to scan our
@@ -207,11 +160,24 @@ let () =
     let realCpp = ref None in
     let readingExtraArg : cilpp_extra_arg option ref = ref None in
     let stripPositions = ref [0] (* always strip argv[0] *) in
-    List.iteri (fun i -> fun arg ->
-        let stripThisOne = fun () -> stripPositions := i :: !stripPositions; () in
-        let stripNextOne = fun () -> stripPositions := (i+1) :: !stripPositions; () in
+    let isXGuarded i = i>0 && argArr.(i-1) = "-Xpreprocessor" in
+    let processArgAt i ignored =
+        let arg = argArr.(i) in
+        let stripThisOne = fun () -> if isXGuarded i then stripPositions := i-1 :: i :: !stripPositions
+                                                     else stripPositions :=        i :: !stripPositions;
+                                      debug_println 1 ("After stripThisOne, strip list now has " ^ (string_of_int (List.length !stripPositions)) ^ " entries");
+                                      () in
+        let stripNextOne = fun () -> let _ = debug_println 1 ("Stripping next from " ^ (string_of_int i)) in
+                                     (
+                                        if isXGuarded i then (* we expect the *next* arg to be "-Xpreprocessor" *)
+                                            (if argArr.(i+1) <> "-Xpreprocessor" then failwith ("inconsistent -Xpreprocessor guarding of " ^ argArr.(i) ^ " but not its argument")
+                                            else stripPositions := (i+2) :: (i+1) :: !stripPositions)
+                                        else stripPositions := (i+1) :: !stripPositions
+                                     ); debug_println 1 ("Strip list now has " ^ (string_of_int (List.length !stripPositions)) ^ " entries"); ()
+        in
         match arg with
         | _  when !finished -> ()
+        | _  when i=0 -> ()
         | "-o" -> (readingExtraArg := Some(`ArgNamingOutputFile);
                    stripThisOne (); ())
         | "--output" -> (readingExtraArg := Some(`ArgNamingOutputFile);
@@ -245,26 +211,55 @@ let () =
               let passName = really (matchesPrefix "-fpass-" s) in
               ppPassesToRunReverse := passName :: !ppPassesToRunReverse;
               stripThisOne (); ()
-        | "--" -> finished := true; stripThisOne (); () (* Explicit end of our args, so terminate *)
-        | "-Xpreprocessor" when None = !readingExtraArg ->
-              stripThisOne (); ()
+        | "--" -> debug_println 1 ("Gave up processing args (saw --) at position " ^ (string_of_int i));
+                  finished := true; stripThisOne (); () (* Explicit end of our args, so terminate *)
+        | "-Xpreprocessor" when None = !readingExtraArg || isXGuarded (i-1) ->
+            (* Handling of -Xpreprocessor is subtle. We want to keep, i.e. pass to the real cpp,
+             * an -Xpreprocessor that is *not* guarding one of *our* private options,
+             * but strip one that *is* guarding one of our options.
+             * We handle this in the stripThisOne / stripNextOne logic.
+             * We always skip over -Xpreprocessor in the main loop. *)
+            ()
         | arg ->
-              let wasReadingExtraArg = !readingExtraArg in
-              readingExtraArg := None;
-              match wasReadingExtraArg with
-                  None -> (finished := true; ()) (* we don't recognise this opt, and it's not an SARG, so terminate *)
-                | Some(`ArgNamingPlugin) -> ppPluginsToLoadReverse := arg :: !ppPluginsToLoadReverse; ()
-                | Some(`ArgNamingRealCPP) -> realCpp := Some(arg); ()
-                | Some(`ArgNamingOutputFile) -> outputFile := Some(arg); ()
-    ) argList
+              if isXGuarded (i-1) then
+                if arg <> "-Xpreprocessor" then failwith "inconsistent guarding mumble"
+                else (* this is -Xpreprocessor and we've already stripped it if we should do -- go round again *) ()
+              else
+              (   let wasReadingExtraArg = !readingExtraArg in
+                  readingExtraArg := None;
+                  match wasReadingExtraArg with
+                      None -> (
+                        debug_println 1 ("Gave up processing args (unrecog'n) at position " ^ (string_of_int i)
+                            ^ " (`" ^ arg ^ "')");
+                        finished := true;
+                        ()
+                      ) (* we don't recognise this opt, and it's not an SARG, so terminate *)
+                    | Some(`ArgNamingPlugin) -> ppPluginsToLoadReverse := arg :: !ppPluginsToLoadReverse; ()
+                    | Some(`ArgNamingRealCPP) -> realCpp := Some(arg); ()
+                    | Some(`ArgNamingOutputFile) -> outputFile := Some(arg); ()
+              )
+    in
+    List.iteri processArgAt argList
     ;
+    debug_println 1 ("CC_IDENTIFIED_ARGS is " ^ (try Sys.getenv "CC_IDENTIFIED_ARGS" with Not_found -> "(unset)"));
     (* Now process our CC_IDENTIFIED_ARGS env var, possibly overriding the above.
      * The env var should take precedence because there's a certain partialness
      * in the above approach to scanning: we give up when we see something we don't
      * recognise. If the caller has set options in our env var
      * specially, always use that because the wrapper knows these. *)
-    (* FIXME: do this *)
-    
+    let identified = Sys.getenv "CC_IDENTIFIED_ARGS" in
+    let identifiedEnts = wordSplit identified in
+    let identifiedPairs : (int * string) option list = List.map
+        (fun s -> let iStr = Str.global_replace (Str.regexp "^\\([0-9]+\\).*$") "\\1" s in
+            try Some(int_of_string iStr, s)
+            with Failure _ -> (debug_println 1 ("could not grok CC_IDENTIFIED_ARGS token: " ^ s ^ " (" ^ iStr ^ ")"); None)
+        )
+        identifiedEnts
+        (* just snarf the numeric chars, and just use the index they denote
+         * FIXME: second item in pair is bogus, but also, is ignored by processArgAt... clean this up. *)
+    in
+    (finished := false; List.iter (fun x -> match x with None -> () | Some(i, arg) -> processArgAt i arg) identifiedPairs)
+    ;
     (* Can we run the real cpp now? We need a new tmpfile for the output. This should
      * have the same suffix as our output file. If we're run from the driver we should
      * always have a named output file... only '-' is a problem. *)
@@ -282,8 +277,12 @@ let () =
     in
     (* Rewrite args. This will strip any arguments that only we understand,
      * and drop '-o' if it existed. *)
+    let _ = debug_println 1 ("Stripping " ^ (string_of_int (List.length !stripPositions)) ^ " from an arglist of length " ^ (string_of_int (List.length argList))) in
     let strippedArgs = List.flatten (List.mapi (fun i -> fun arg ->
-        if List.mem i !stripPositions then [] else [arg]
+        if List.mem i !stripPositions then
+         let _ = debug_println 1 ("Decided to consume arg at position " ^ (string_of_int i) ^ " (`" ^ argArr.(i) ^ "')") in
+         [] 
+        else [arg]
     ) argList)
     in
     let newArgs =
