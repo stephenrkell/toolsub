@@ -4,7 +4,7 @@ srcroot := $(realpath $(dir $(THIS_MAKEFILE))/../..)
 -include $(srcroot)/config.mk
 
 .PHONY: default
-default: cilpp
+default: cilpp cilprint
 
 OCAMLFIND ?= ocamlfind
 ifneq ($(MAKECMDGOALS),clean)
@@ -51,7 +51,9 @@ OCAMLLIBS := str.cmxa nums.cmxa unix.cmxa cil.cmxa #frontc.cmxa
 # dynlink against any of its symbols.
 cilpp: compiler_args.cmx cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
-	
+cilprint: compiler_args.cmx cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
+	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
+
 %.cmxs: %.cmx
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+
 %.cmx %.cmi: %.ml
