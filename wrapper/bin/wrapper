@@ -415,7 +415,7 @@ awk_post='
     }
     inc == 0 {
         printf("input_files_by_argposn[" realposn "]=\"" $0 "\"\n");
-        printf("input_files_index[" $0 "]=1\n");
+        printf("input_files_index[\"" $0 "\"]=1\n");
         # do_output will set head_word_indices only if canonopt != ""
         printf("head_word_indices[\"" $0 "\"]=${head_word_indices[\"" $0 "\"]:+${head_word_indices[\"" $0 "\"]} }" realposn "\n");
         inc=1;
@@ -3421,6 +3421,9 @@ scan_generic_awk () {
     debug_print 1 "awk program ($awkvar) has $(echo "$optawk"  | wc -l ) option lines" 1>&2
     awkout="$( IFS=$'\n' echo_args "$@" | run_awkprog "$var_prefix" "${awk_pre}${optawk}${awk_post}${awk_output}" )"
     debug_print 1 "awk output was a program of $(echo "$awkout" | wc -l) lines" 1>&2
+    if [[ ${DEBUG_CC:-0} -gt 2 ]]; then
+        echo "$awkout" 1>&2
+    fi
     eval "$awkout"
     debug_print 1 "Finished scan with prefix ${var_prefix}; argcount was ${argcount}" 1>&2
 }
@@ -3745,10 +3748,12 @@ print_all () {
 
 # A valid word in CC_IDENTIFY_ARGS might not begin with '-'; if it doesn't,
 # it is considered to stand for input files. We filter these out here.
+input_files_are_identified=0
 identified_optlines () {
     for w in $CC_IDENTIFY_ARGS; do
         case $w in
             (-*) echo $w ;;
+            (*)  input_files_are_identified=1 ;;
         esac
     done
 }
@@ -3756,7 +3761,8 @@ gcc_cc1_optlines_plus_identified_optlines () {
     { gcc_driver_optlines; identified_optlines; } | sort -r
 }
 
-gcc_cc1_optawk_plus_identified_optawk="$gcc_cc1_optawk""$( identified_optlines | optlines_to_awk )"
+identified_optawk="$( identified_optlines | optlines_to_awk )"
+gcc_cc1_optawk_plus_identified_optawk="$gcc_cc1_optawk""$identified_optawk"
 
 combined_driver_optlines_plus_identified_optlines () {
     { combined_driver_optlines; identified_optlines; } | sort -r
@@ -3822,7 +3828,6 @@ lift_gcc_cc1_to_cc () {
     # Instead we want to scan the whole cc1 command line
     # but then check what was -Xpreprocessor-qualified in the driver command line. (? SOMETHING LIKE THIS)
 
-
     # If we have no CC_DRIVER_ARGS, don't give "" to scan_driver_plus_identified
     prefix="driver_plus_identified" eval "$declare_scan_outputs"
     if [[ -n "$CC_DRIVER_ARGS" ]]; then
@@ -3871,7 +3876,7 @@ lift_gcc_cc1_to_cc () {
     output_one () {
         local arg="$1"
         local arg_prefix="$2"
-        local originating_optstring=""
+        # an empty prefix means no prefix
         case "$arg_prefix" in
             (?*) # non-empty
                 outargs[$outctr]="$arg_prefix"
@@ -3882,6 +3887,32 @@ lift_gcc_cc1_to_cc () {
                 outctr=$(( $outctr + 1 ))
             ;;
         esac
+        # Is this an "identified" arg?
+        identified_optawk="$( identified_optlines | optlines_to_awk )"
+        # If we do scan_generic with this awk, we will generate some shell code
+        # that... we may not want? Well, it tells us 'unrecognised' so maybe that's enough?
+        # We also want 'inc'... do we get this?
+        # FIXME: per-arg awk invocation is bad. How can we avoid this here?
+        # The obvious angle is to run all our output args through the awk program once,
+        # at the end.
+        prefix="cc_identified" eval "$declare_scan_outputs"
+        scan_generic_awk identified_optawk cc_identified \
+           "${CC_DRIVER:-cc}" "$arg"
+        if [[ "$unrecognised" -eq 0 ]]; then
+            local addtext="${outctr}-$(( $outctr + $inc - 1))$arg"
+            case "$arg" in
+                (-?*)
+                # this option was recognised as identified
+                CC_IDENTIFIED_ARGS="${CC_IDENTIFIED_ARGS:+${CC_IDENTIFIED_ARGS} }$addtext"
+                ;;
+                (*)
+                # filename (might be '-')! are those identified?
+                if [[ $filenames_are_identified -eq 1 ]]; then
+                    CC_IDENTIFIED_ARGS="${CC_IDENTIFIED_ARGS:+${CC_IDENTIFIED_ARGS} }$addtext"
+                fi
+                ;;
+            esac
+        fi
     }
     # last_ ...? something to do with identified args
     case_stmt="case \"\$1\" in `identified_optlines | optlines_to_caselines` esac"
@@ -4076,6 +4107,7 @@ lift_gcc_cc1_to_cc () {
         suppress_arg=0
         inposn=$(( $inposn + $inc ))
     done
+    debug_print 1 "exporting CC_IDENTIFIED_ARGS=\"$CC_IDENTIFIED_ARGS\"" 1>&2
     export CC_IDENTIFIED_ARGS
 }
 detraditionalize_clang_if_needed () {
@@ -4157,10 +4189,16 @@ ensure_driver_best_guess () {
     export CC_DRIVER_ARGS
 }
 
-# FIXME: check directly if we're being sourced, and return now if so?
+# Now check directly if we're being sourced, and return now if so?
 # Probably comparing "$0" to "${BASH_SOURCE[0]}" is the way to go.
-# Then maybe we should just run the above code? Oh, but that's not
-# right for all cases in the case statement below.
+# Then maybe we should just run the above code and set CC_DRIVER
+# for the sourcing client? That's not right for all cases in
+# the case statement below, so we run it only in the branch here.
+(return 0 2>/dev/null) && being_sourced=1 || being_sourced=0
+if [[ $being_sourced -eq 1 ]]; then
+    ensure_driver_best_guess
+    return
+fi
 
 case "$0" in
     (*cflags|*cppflags|*cxxflags)
