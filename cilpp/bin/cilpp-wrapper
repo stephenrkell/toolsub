@@ -18,7 +18,7 @@ CC_IDENTIFY_ARGS="-save-temps \
 -pluginSARG \
 -fpass-JARG \
 -oSARG \
---output=JARG"
+--output=JARG${CC_IDENTIFY_ARGS:+$'\n'${CC_IDENTIFY_ARGS}}"
 
 export CC_IDENTIFY_ARGS
 

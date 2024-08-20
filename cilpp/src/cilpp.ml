@@ -64,8 +64,8 @@ open Feature
 
 let debug_level : int = int_of_string (Sys.getenv "DEBUG_CC")
 
-let debug_println level str = if level < debug_level then ()
-    else output_string Pervasives.stderr (str ^ "\n")
+let debug_println level str = if level > debug_level then ()
+    else (output_string Pervasives.stderr (str ^ "\n"); flush Pervasives.stderr)
     
 (* Test whether a string matches a prefix... but instead of returning a
  * boolean, return None if it doesn't and Some(suffix) if it does, i.e.
@@ -179,19 +179,21 @@ let () =
         | _  when !finished -> ()
         | _  when i=0 -> ()
         | "-o" -> (readingExtraArg := Some(`ArgNamingOutputFile);
-                   stripThisOne (); ())
+                   stripThisOne (); stripNextOne(); ())
         | "--output" -> (readingExtraArg := Some(`ArgNamingOutputFile);
-                   stripThisOne (); ())
+                   stripThisOne (); stripNextOne(); ())
         | s when None <> matchesPrefix "--output=" s ->
               let outputFileName = really (matchesPrefix "--output=" s) in
               outputFile := Some(outputFileName); stripThisOne (); ()
             (* PROBLEM: how to distinguish a -save-temps directed at us
              * versus a -save-temps directed at the real cpp? i.e. do we stripThisOne () ?
-             * A plain preprocess-only invocation will not generate any temps, so we are
-             * fine to strip it.... *)
+             * Answer: actually it doesn't matter. A plain preprocess-only driver invocation
+             * will not generate any temps, so we are fine to strip it unconditionally i.e.
+             * assume the -save-temps we see only applies to us. *)
         | "-save-temps" -> saveTemps := true; stripThisOne (); () (* i.e. accept -Wp,-save-temps *)
-            (* ... but in general we can't assume our args are not understood by the underlying
-             * tool. FIXME: this seems like a problem, for any option that could apply to both
+            (* ... but in general there may be a problem here nayway. We surely can't assume our
+             * args are not understood by the underlying tool.
+             * FIXME: this seems like a problem, for any option that could apply to both
              * independently. We're perhaps a bit lucky that -save-temps is a degenerate case? *)
 
             (* How does "-real-cpp" get set in a "normal" use case?
@@ -258,7 +260,8 @@ let () =
         (* just snarf the numeric chars, and just use the index they denote
          * FIXME: second item in pair is bogus, but also, is ignored by processArgAt... clean this up. *)
     in
-    (finished := false; List.iter (fun x -> match x with None -> () | Some(i, arg) -> processArgAt i arg) identifiedPairs)
+    (List.iter (fun x -> finished := false; match x with None -> () | Some(i, arg) ->
+        debug_println 1 ("Got identified index " ^ (string_of_int i)); processArgAt i arg) identifiedPairs)
     ;
     (* Can we run the real cpp now? We need a new tmpfile for the output. This should
      * have the same suffix as our output file. If we're run from the driver we should
@@ -280,7 +283,7 @@ let () =
     let _ = debug_println 1 ("Stripping " ^ (string_of_int (List.length !stripPositions)) ^ " from an arglist of length " ^ (string_of_int (List.length argList))) in
     let strippedArgs = List.flatten (List.mapi (fun i -> fun arg ->
         if List.mem i !stripPositions then
-         let _ = debug_println 1 ("Decided to consume arg at position " ^ (string_of_int i) ^ " (`" ^ argArr.(i) ^ "')") in
+         let _ = debug_println 1 ("Decided to consume+strip arg at position " ^ (string_of_int i) ^ " (`" ^ argArr.(i) ^ "')") in
          [] 
         else [arg]
     ) argList)

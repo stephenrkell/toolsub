@@ -3771,8 +3771,9 @@ combined_driver_optlines_plus_identified_optlines () {
 combined_driver_optawk_plus_identified_optawk="$combined_driver_optawk""$( identified_optlines | optlines_to_awk )"
 
 lift_gcc_cc1_to_cc () {
-    local cc1="$1"
-    shift
+    local cc_cmd_nwords="$1"
+    local cc1="$2"
+    shift; shift
     # TWO WAYS of guessing where to insert -Xpreprocessor.
     # (1) "Did it appear with -Xpreprocessor in the driver command?"
     # (2) "Knowing what we know about the driver, does it pass through the driver?"
@@ -3888,7 +3889,6 @@ lift_gcc_cc1_to_cc () {
             ;;
         esac
         # Is this an "identified" arg?
-        identified_optawk="$( identified_optlines | optlines_to_awk )"
         # If we do scan_generic with this awk, we will generate some shell code
         # that... we may not want? Well, it tells us 'unrecognised' so maybe that's enough?
         # We also want 'inc'... do we get this?
@@ -3896,10 +3896,16 @@ lift_gcc_cc1_to_cc () {
         # The obvious angle is to run all our output args through the awk program once,
         # at the end.
         prefix="cc_identified" eval "$declare_scan_outputs"
+        unrecognised=0
         scan_generic_awk identified_optawk cc_identified \
            "${CC_DRIVER:-cc}" "$arg"
         if [[ "$unrecognised" -eq 0 ]]; then
-            local addtext="${outctr}-$(( $outctr + $inc - 1))$arg"
+            # outctr is the index of the *next* value we'll add, i.e. the out we just output is outctr - 1
+            # GAH. It gets worse. If our CPP is "mycc -E", then our outargs will start at position 2
+            # on the command line, not position 1. That's why we have $cc_cmd_nwords. Our IDENTIFIED
+            # description needs to be using indices from hte actual argv that will be seen by the
+            # command we run.
+            local addtext="$(( ${outctr} + ${cc_cmd_nwords} - 2 ))-$(( $outctr + ${cc_cmd_nwords} - 2 + $inc - 1 ))$arg"
             case "$arg" in
                 (-?*)
                 # this option was recognised as identified
@@ -4358,11 +4364,14 @@ case "$1" in
         # print out how we scanned the command line
         declare -a outargs
         prefix="gcc_cc1" eval "$declare_scan_outputs"
-        lift_gcc_cc1_to_cc "$@"
-        # the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
-        debug_print 1 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
+        count_words () {
+            echo $#
+        }
         if command_is_pp "gcc_cc1" "$@"; then
             CPP="${CPP:-${CC_DRIVER} -E}"
+            lift_gcc_cc1_to_cc `count_words $CPP` "$@"
+            # the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
+            debug_print 1 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
             # CPP might be the driver (cc -E) or it might be a well-matched
             # bona fide 'cpp' command... might it? Well, not in general... we lift to
             # the driver command line language, so if the original driver command used
@@ -4372,6 +4381,9 @@ case "$1" in
             eval do_exec ${CPP} "${outargs[@]}"
         else
             CC="${CC:-${CC_DRIVER} -S}"
+            lift_gcc_cc1_to_cc `count_words $CC` "$@"
+            # the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
+            debug_print 1 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
             eval do_exec ${CC} "${outargs[@]}"
         fi
         ;;
