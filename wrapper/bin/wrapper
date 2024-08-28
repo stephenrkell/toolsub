@@ -3339,6 +3339,14 @@ gcc_driver_optawk='# BEGIN GENERATED gcc_driver_optawk
 /^(-D)(.*)$/ { fullopt=$0; canonopt="-D"; optarg=gensub(/(-D)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
 /^(-A)$/     { fullopt=$0; canonopt="-A"; snarfing_optarg=1; inc=2; next; }
 /^(-A)(.*)$/ { fullopt=$0; canonopt="-A"; optarg=gensub(/(-A)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+# now the 'standard' pass-through cases: other kinds of -g, -f, -m, -O, -W, or --param
+/^-g.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
+/^-f.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
+/^-m.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
+/^-O.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
+/^-W.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
+/^--param=.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
+/^--param$/    { fullopt=$0; canonopt="--param"; snarfing_optarg=1; inc=2; next; }
 '
 # use this with 'eval', having set $prefix, to declare
 # all the arrays we set as output when scanning.
