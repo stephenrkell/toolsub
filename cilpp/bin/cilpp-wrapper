@@ -8,6 +8,8 @@ wrapper_funcs="${CC_WRAPPER:-${WRAPPER:-$(dirname "$0")/../../wrapper/bin/wrappe
 . "$wrapper_funcs"  || \
   { echo "Could not source wrapper functions (tried: $wrapper_funcs)" 1>&2; exit 1; }
 
+ensure_driver_best_guess
+
 test -n "$CC_DRIVER" || \
   { echo "Could not guess a plausible CC_DRIVER" 1>&2; exit 1; }
 
