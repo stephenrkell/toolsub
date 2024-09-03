@@ -4999,7 +4999,9 @@ scan_clang () {
 # we want it to be possible to write wrappers
 # as shell functions, not just commands.
 do_exec () {
-    debug_print 1 "Doing: $@"
+    local descr="$1"
+    shift
+    debug_print 1 "Doing ($descr): $@"
 #    exec "$@"
     "$@"
     status=$?
@@ -5447,7 +5449,7 @@ lift_gcc_cc1_to_cc () {
         suppress_warnings=1  # HACK
         scan_generic_awk identified_optawk cc_identified \
            "${CC_DRIVER:-cc}" "$arg"
-        suppress_warnings=0
+        suppress_warnings=""
         if [[ "$unrecognised" -eq 0 ]]; then
             # outctr is the index of the *next* value we'll add, i.e. the out we just output is outctr - 1
             # GAH. It gets worse. If our CPP is "mycc -E", then our outargs will start at position 2
@@ -5924,13 +5926,13 @@ case "$1" in
             # "-Xpreprocessor" or "-Wp", we will re-create these in the lifted command.
             # Most cpp options will just pass through, so it's rare to use -Wp etc.
             # Use eval because CPP/CC may be quoted
-            eval do_exec ${CPP} "${outargs[@]}"
+            eval do_exec "cpp" ${CPP} "${outargs[@]}"
         else
             CC="${CC:-${CC_DRIVER} -S}"
             lift_gcc_cc1_to_cc `count_words $CC` "$@"
             # the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
             debug_print 2 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
-            eval do_exec ${CC} "${outargs[@]}"
+            eval do_exec "cc" ${CC} "${outargs[@]}"
         fi
         ;;
     (*/clang)
@@ -5954,14 +5956,17 @@ case "$1" in
             exit 1
         elif [[ "$(list_optposns "clang" "-E")" != "" ]]; then
             CMD="${CPP:-${1}}"
+            local descr="clang-pp"
         elif [[ "$(list_optposns "clang" "--emit-llvm-bc")" != "" ]]; then
             # What to do here? We just treat it as a mode of CC, i.e.
             # our compiler wrapper must support both --emit-llvm-bc and -S
+            local descr="clang-cc-bc"
             CMD="${CC:-${1}}"
         else # must be -S
+            local descr="clang-cc"
             CMD="${CC:-${1}}"
         fi
-        do_exec ${CMD} "${outargs[@]}"
+        do_exec "$descr" ${CMD} "${outargs[@]}"
         ;;
     (as|*/as)
         AS="${AS:-$1}" # don't call into driver again; 'as' is a documented tool
@@ -5970,7 +5975,7 @@ case "$1" in
         # set some variables that our wrapped AS might use, if a shell function
         parse_assembler_command "$@" 
         shift
-        do_exec ${AS} "$@"
+        do_exec "as" ${AS} "$@"
         ;;
     (collect2|*/collect2)
         # We want to actually run collect2 but allow wrapping
@@ -5998,15 +6003,15 @@ case "$1" in
         collect2_cmd="$1"
         shift
         export COLLECT_GCC_OPTIONS="'-B' '$(dirname "$(readlink -f "${our_filename}")")' ${COLLECT_GCC_OPTIONS}"
-        do_exec "${collect2_cmd}" "$@"
+        do_exec "collect2" "${collect2_cmd}" "$@"
         ;;
     (ld|*/ld)
         # if the driver wants to run 'ld' direcly, that's OK. We can wrap it
         LD="${LD:-$1}"  # don't call into driver again; ld is a documented tool
         shift
-        do_exec ${LD} "$@"
+        do_exec "ld" ${LD} "$@"
         ;;
     (*) debug_print 1 "Actually not wrapping: $@" 1>&2
-        do_exec "$@"
+        do_exec "unknown($1)" "$@"
         ;;
 esac
