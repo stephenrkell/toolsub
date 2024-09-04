@@ -370,7 +370,15 @@ awk_pre='
     # HACKy utility function to de-escape the regex escapes inserted by our sed pipeline that processes
     # the optlines, i.e. our pipeline turns "-nostdinc++" to "-nostdinc\+\+" and this function turns it back.
     function deesc(arg) {
-        return gensub(/[]\[+?{}\*\.]/, "\\\\&", "g", $0)
+        return gensub(/[]\[+?{}\*\.]/, "\\\\&", "g", arg)
+    }
+    # shell-escape functions: we use this when printing output shell commands for the client to source
+    function shesc(arg) {
+        return gensub(/["'"'"'()\*?{}`\$]/, "\\\\&", "g", arg)
+    }
+    # the same but for escaping within double quotes
+    function shdqesc(arg) {
+        return gensub(/["`\$]/, "\\\\&", "g", arg)
     }
     # In the bash code, "realposn" increments by "inc" every cycle,
     # where "inc" is at least 1.
@@ -383,16 +391,16 @@ awk_pre='
     # To ensure we snarf every arg, we print the "args=" line in BEGIN.
     function do_output(the_arg) {
       if (inc > 1) { printf("incs_by_argposn["realposn"]=\"" inc "\"\n"); }
-      printf("fullopts_by_argposn[" realposn "]=\"" fullopt "\"\n");
+      printf("fullopts_by_argposn[" realposn "]=\"" shdqesc(fullopt) "\"\n");
       if (canonopt != "") {
-          printf("canonopts_by_argposn[" realposn "]=\"" canonopt "\"\n");
-          printf("existing_optposns_for_this_canonopt=\"${optposns_by_canonopt[\"" canonopt "\"]}\"\n");
-          printf("optposns_by_canonopt[\"" canonopt "\"]=\"${existing_optposns_for_this_canonopt:+${existing_optposns_for_this_canonopt} }" realposn "\"\n");
-          printf("fullopts_by_argposn[" realposn "]=\"" fullopt "\"\n");
+          printf("canonopts_by_argposn[" realposn "]=\"" shdqesc(canonopt) "\"\n");
+          printf("existing_optposns_for_this_canonopt=\"${optposns_by_canonopt[\"" shdqesc(canonopt) "\"]}\"\n");
+          printf("optposns_by_canonopt[\"" shdqesc(canonopt) "\"]=\"${existing_optposns_for_this_canonopt:+${existing_optposns_for_this_canonopt} }" realposn "\"\n");
+          printf("fullopts_by_argposn[" realposn "]=\"" shdqesc(fullopt) "\"\n");
           printf("existing_optposns_for_this_fullopt=\"${optposns_by_fullopt[\"" fullopt "\"]}\"\n");
-          printf("optposns_by_fullopt[\"" fullopt "\"]=\"${existing_optposns_for_this_fullopt:+${existing_optposns_for_this_fullopt} }" realposn "\"\n");
-          printf("existing_head_word_indices=\"${head_word_indices[\"" fullopt "\"]}\"\n");
-          printf("head_word_indices[\"" fullopt "\"]=\"${existing_head_word_indices:+${existing_head_word_indices} }" realposn "\"\n");
+          printf("optposns_by_fullopt[\"" shdqesc(fullopt) "\"]=\"${existing_optposns_for_this_fullopt:+${existing_optposns_for_this_fullopt} }" realposn "\"\n");
+          printf("existing_head_word_indices=\"${head_word_indices[\"" shdqesc(fullopt) "\"]}\"\n");
+          printf("head_word_indices[\"" shdqesc(fullopt) "\"]=\"${existing_head_word_indices:+${existing_head_word_indices} }" realposn "\"\n");
           if (optarg != "") {
               # We have an arg and a canonopt, but since some optargs are JARGS,
               # the optarg may or may not be isolated in the argument list;
@@ -402,11 +410,11 @@ awk_pre='
               # -foptimize-blah=foo, where both "blah" and "foo" are arguments.
               # That will make all the above match clauses more interesting but
               # it should still basically fit the model.
-              printf("optargs_by_argposn[" (realposn) "]=\"" optarg "\"\n");
+              printf("optargs_by_argposn[" (realposn) "]=\"" shdqesc(optarg) "\"\n");
               # Also remember arguments as a list of positions -- yes this is indirect, but
               # args may have spaces in them, which would mess up a space-separated list
-              printf("existing_argposns_for_this_canonopt=\"${optargposns_by_canonopt[\"" canonopt "\"]}\"\n");
-              printf("optargposns_by_canonopt[\"" canonopt "\"]=\"${existing_argposns_for_this_canonopt:+${existing_argposns_for_this_canonopt} }" realposn "\"\n");
+              printf("existing_argposns_for_this_canonopt=\"${optargposns_by_canonopt[\"" shdqesc(canonopt) "\"]}\"\n");
+              printf("optargposns_by_canonopt[\"" shdqesc(canonopt) "\"]=\"${existing_argposns_for_this_canonopt:+${existing_argposns_for_this_canonopt} }" realposn "\"\n");
           }
       }
       printf("unrecognised=" unrecognised "\n");
@@ -417,7 +425,7 @@ awk_pre='
       optarg="";
     } # end do_output
     # always print the arg and increment argcount one-by-one
-    { ++argcount; printf("args[" argcount "]=\"" $0 "\"\n"); }
+    { ++argcount; printf("args[" argcount "]=\"" shdqesc($0) "\"\n"); }
     snarfing_optarg == 1 { optarg=$0; snarfing_optarg=0; do_output(fullopt); next; }
 '
 optlines_to_awk () {
@@ -476,7 +484,7 @@ awk_post='
         next;
     }'
 # separate the end-of-script output stage, because we use a custom one for -Xpreprocessor
-awk_output='
+awk_do_output='
     END { printf("argcount=" argcount "\n"); }
 '
 
@@ -4923,7 +4931,7 @@ scan_generic_awk () {
     # fullopts_by_argposn     sparse array, one entry for each arg that is an option, not canonicalised
     # incs_by_argposn         sparse array, one entry for whenever there is an 'inc' > 1 -- how many to increment argpos by to get to the next input file or opt
     # optposns_by_canonopt    associative array, one entry (space-sep list of indices) per canonopt seen
-    # optposns_by_canonopt    associative array, one entry (space-sep list of indices) per fullopt seen
+    # optposns_by_fullopt     associative array, one entry (space-sep list of indices) per fullopt seen
     # optargposns_by_canonopt associative array, one entry (space-sep list of indices) per optarg seen
     #    ^-- is this really useful? for a JARG it gives us the whole opt, not the isolated optarg
     #    Maybe we should just use the inc and keep optargs_by_argposn? YES
@@ -4946,17 +4954,17 @@ scan_generic_awk () {
     declare -n optargposns_by_canonopt=${var_prefix}_optargposns_by_canonopt
     declare -n optargs_by_argposn=${var_prefix}_optargs_by_argposn
 
-    #cat >"$awkfile" <<<"${awk_pre}$( $optlinefunc | optlines_to_awk)${awk_post}${awk_output}"
+    #cat >"$awkfile" <<<"${awk_pre}$( $optlinefunc | optlines_to_awk)${awk_post}${awk_do_output}"
     declare -n optawk="$awkvar"
-    debug_print 2 "awk program ($awkvar) has $(echo "$optawk"  | wc -l ) option lines" 1>&2
-    awkout="$( IFS=$'\n' echo_args "$@" | run_awkprog "$var_prefix" "${awk_pre}${optawk}${awk_post}${awk_output}" \
+    debug_print 2 "awk program ($awkvar) has $(echo "$optawk"  | wc -l ) option lines"
+    awkout="$( IFS=$'\n' echo_args "$@" | run_awkprog "$var_prefix" "${awk_pre}${optawk}${awk_post}${awk_do_output}" \
        -v suppress_warnings=${suppress_warnings:-""} )"
-    debug_print 2 "awk output was a program of $(echo "$awkout" | wc -l) lines" 1>&2
+    debug_print 2 "awk output was a program of $(echo "$awkout" | wc -l) lines"
     if [[ ${DEBUG_CC:-0} -gt 2 ]]; then
         echo "$awkout" 1>&2
     fi
     eval "$awkout"
-    debug_print 2 "Finished scan with prefix ${var_prefix}; argcount was ${argcount}" 1>&2
+    debug_print 2 "Finished scan with prefix ${var_prefix}; argcount was ${argcount}"
 }
 
 combined_driver_optlines () {
@@ -5428,6 +5436,7 @@ lift_gcc_cc1_to_cc () {
     output_one () {
         local arg="$1"
         local arg_prefix="$2"
+        debug_print 3 "outputting arg: $arg"
         # an empty prefix means no prefix
         case "$arg_prefix" in
             (?*) # non-empty
@@ -5933,14 +5942,15 @@ case "$1" in
             # the driver command line language, so if the original driver command used
             # "-Xpreprocessor" or "-Wp", we will re-create these in the lifted command.
             # Most cpp options will just pass through, so it's rare to use -Wp etc.
-            # Use eval because CPP/CC may be quoted
-            eval do_exec "cpp" ${CPP} "${outargs[@]}"
+            do_exec "CPP" ${CPP} "${outargs[@]}"
         else
-            CC="${CC:-${CC_DRIVER} -S}"
+            # NOTE the special placement of "-S" here. C compilers will try to produce
+            # a fully linked output, so we always want the -S.
+            CC="${CC:-${CC_DRIVER}} -S"
             lift_gcc_cc1_to_cc `count_words $CC` "$@"
             # the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
             debug_print 2 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
-            eval do_exec "cc" ${CC} "${outargs[@]}"
+            do_exec "CC" ${CC} "${outargs[@]}"
         fi
         ;;
     (*/clang)
