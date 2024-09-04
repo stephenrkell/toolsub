@@ -22,17 +22,6 @@ type basic_extra_arg = [
   | `ArgNamingDependencyOutputFile of bool (* nameIsExplicitlyRequested *)
   ]
 
-(* Test whether a string matches a prefix... but instead of returning a
- * boolean, return None if it doesn't and Some(suffix) if it does, i.e.
- * returning the part of the string that follows the prefix. *)
-let matchesPrefix (prefix: string) (s: string) : string option =
-    if (String.length s > String.length prefix
-       && String.sub s 0 (String.length prefix) = prefix)
-    then Some(Str.string_after s (String.length prefix))
-    else None
-
-(* Convenience for forcing an option *)
-let really = function Some(optVal) -> optVal | None -> failwith "really None"
 
 type basic_arg_info = {
     minus_o_pos     : int option;

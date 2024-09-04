@@ -3248,6 +3248,8 @@ gcc_cc1_optawk='# BEGIN GENERATED gcc_cc1_optawk
 # manually added cases
 /^-E$/ { fullopt=$0; canonopt="-E"; inc=1; do_output(fullopt); next; }
 /^(-g)([1-9])$/ { fullopt=$0; canonopt="-g"; optarg=gensub(/^(-g)([1-9])$/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(--auxbase-strip)$/     { fullopt=$0; canonopt=deesc("--auxbase-strip"); snarfing_optarg=1; inc=2; next; }
+/^(-auxbase-strip)$/     { fullopt=$0; canonopt=deesc("-auxbase-strip"); snarfing_optarg=1; inc=2; next; }
 '
 
 clang_optawk='# BEGIN GENERATED clang_optawk
@@ -4853,12 +4855,13 @@ gcc_driver_optawk='# BEGIN GENERATED gcc_driver_optawk
 /^(-M)$/ { fullopt=$0; canonopt="-M"; inc=1; optarg=""; do_output(fullopt); next; }
 /^(-L)$/     { fullopt=$0; canonopt="-L"; snarfing_optarg=1; inc=2; next; }
 /^(-L)(.*)$/ { fullopt=$0; canonopt="-L"; optarg=gensub(/(-L)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+/^(-I)$/     { fullopt=$0; canonopt="-I"; snarfing_optarg=1; inc=2; next; }
 /^(-I)(.*)$/ { fullopt=$0; canonopt="-I"; optarg=gensub(/(-I)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
 /^(-D)$/     { fullopt=$0; canonopt="-D"; snarfing_optarg=1; inc=2; next; }
 /^(-D)(.*)$/ { fullopt=$0; canonopt="-D"; optarg=gensub(/(-D)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
 /^(-A)$/     { fullopt=$0; canonopt="-A"; snarfing_optarg=1; inc=2; next; }
 /^(-A)(.*)$/ { fullopt=$0; canonopt="-A"; optarg=gensub(/(-A)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
-# now the 'standard' pass-through cases: other kinds of -g, -f, -m, -O, -W, or --param
+# now the "standard" pass-through cases: other kinds of -g, -f, -m, -O, -W, or --param
 /^-g.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
 /^-f.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
 /^-m.*/  { fullopt=$0; canonopt=$0; inc=1; optarg=""; do_output(fullopt); next; }
@@ -5561,32 +5564,7 @@ lift_gcc_cc1_to_cc () {
         # means 1.
         #
         # HOWEVER, feeding it a chunk at a time is slow, i.e. running awk many times.
-#        awk_output="$( for n in `seq $inposn $(( $inposn + $inc - 1 ))`; do printf "%s\n" "${gcc_cc1_args[${n}]}"; done | \
-#           run_awkprog "driver_test" \
-#              "${awk_pre}${gcc_driver_optawk}${awk_post}" \
-#              -v suppress_warnings=1
-#        )" #"
-#        reported_inc="$( sed -n '/^incs_by_argposn\[1\]=/ {s///;p}' <<<"$awk_output" | sed 's/^[[:blank:]]*$/1/' | tr -cd '0-9' )"
-#        reported_unrecognised="$( tail -n3 <<<"$awk_output" | sed -n '/^unrecognised=/ {s///;p}' )"
-#        debug_print 3 "awk output: $awk_output" 1>&2
-#        debug_print 2 "chunk length $inc beginning ${gcc_cc1_args[$inposn]}: reported inc? $reported_inc ; unrecog? $reported_unrecognised" 1>&2
-#        if ! [[ $reported_inc -eq $inc ]] || \
-#             ( [[ $inc -eq 1 ]] && [[ $reported_unrecognised -eq 1 ]]); then
-#            # Our best guess is that this option does not pass through
-#            if [[ $is_pp -eq 1 ]]; then
-#                arg_prefix="-Xpreprocessor"
-#                suppress_arg=0
-#            else
-#                arg_prefix=""
-#                # HMM. Maybe if it appeared on the original driver command line,
-#                # and not in a -Xfoo-guarded context, we should just include it and see?
-#                suppress_arg=1
-#            fi
-#        else
-#            arg_prefix=""  # FIXME
-#            suppress_arg=0 # FIXME
-#        fi
-        # INSTEAD we look at 'head words'.
+        # INSTEAD we first try to look at 'head words'.
         # - scan the driver all in one go
         # - if we saw the current head word as a head word then,
         #        AND it was not qualified by -Xpreprocessor,
@@ -5602,40 +5580,67 @@ lift_gcc_cc1_to_cc () {
         # that is a hack.
         # I think we just need to be more permissive: if the head word appears
         # unqualified, it's understood by the driver, so we don't care whether
-        # its argument mathes
+        # its argument matches
         if [[ -v gcc_cc1_input_files_by_argposn[$inposn] ]]; then
             # let input files pass through
             arg_prefix=""
             suppress_arg=""
         else
-            if [[ $is_pp -eq 1 ]]; then
-                arg_prefix="-Xpreprocessor"
-                suppress_arg=0
-            else
-                arg_prefix=""
-                suppress_arg=1
+            # it's not an input file...
+            # is it a head word that was *passed to* the driver when we scanned its command?
+            # First set some safe defaults
+            arg_prefix=""
+            suppress_arg=1
+            for n in ${driver_plus_identified_head_word_indices["$arg"]}; do
+                # we get one n for each place where this word appeared in the driver command
+                #
+                # We used to guard on the rest of the chunk matching:
+                #    ( [[ ${driver_plus_identified_incs_by_argposn[$n]:-1} -eq 1 ]] || \
+                #        [[ "${driver_plus_identified_args[$(( $n + 1 ))]}" == "${gcc_cc1_args[$(( $inposn + 1 ))]}" ]] )
+                # but that breaks "-o"! And other chunks that get mutated by the driver.
+                # Also, if it's an input file i.e. doesn't look like an option, we always pass it through.
+
+                if [[ "${driver_plus_identified_args[$(( $n - 1 ))]}" != "-Xpreprocessor" ]] # EXTRACTED here
+                then
+                    # it's a match! i.e. we've seen this arg as an unprefixed head word to the driver
+                    # we assume it passes through
+                    suppress_arg=0
+                    break
+                fi
+            done
+            if [[ $suppress_arg -eq 1 ]]; then
+                # one more shot at trying not to suppress this....
+                # The head word was not seen on the driver command line... OK, but
+                #  *would* it be recognised by the driver?
+                # FIXME: do this in a way that avoids per-opt awking
+                awk_output="$( for n in `seq $inposn $(( $inposn + $inc - 1 ))`; do printf "%s\n" "${gcc_cc1_args[${n}]}"; done | \
+                   run_awkprog "driver_test" \
+                      "${awk_pre}${gcc_driver_optawk}${awk_post}" \
+                      -v suppress_warnings=1
+                )" #"
+                reported_inc="$( sed -n '/^incs_by_argposn\[1\]=/ {s///;p}' <<<"$awk_output" | sed 's/^[[:blank:]]*$/1/' | tr -cd '0-9' )"
+                reported_unrecognised="$( tail -n3 <<<"$awk_output" | sed -n '/^unrecognised=/ {s///;p}' )"
+                debug_print 3 "awk output: $awk_output" 1>&2
+                debug_print 2 "chunk length $inc beginning ${gcc_cc1_args[$inposn]}: reported inc? $reported_inc ; unrecog? $reported_unrecognised" 1>&2
+                if ! [[ $reported_inc -eq $inc ]] || \
+                     ( [[ $inc -eq 1 ]] && [[ $reported_unrecognised -eq 1 ]]); then
+                    # it was not recognised by the driver
+                    if [[ $is_pp -eq 1 ]]; then
+                        arg_prefix="-Xpreprocessor"
+                        suppress_arg=0
+                    else
+                        # need to suppress
+                        # FIXME: set up some -Xcompiler-like checking via an env var
+                        arg_prefix=""
+                        suppress_arg=1
+                    fi
+                else
+                    # it was recognised by the driver
+                    arg_prefix=""
+                    suppress_arg=0
+                fi
             fi
         fi
-        for n in ${driver_plus_identified_head_word_indices["$arg"]}; do
-            # we get one n for each place where this word appeared in the driver command
-            #
-            # We used to guard on the rest of the chunk matching:
-            #    ( [[ ${driver_plus_identified_incs_by_argposn[$n]:-1} -eq 1 ]] || \
-            #        [[ "${driver_plus_identified_args[$(( $n + 1 ))]}" == "${gcc_cc1_args[$(( $inposn + 1 ))]}" ]] )
-            # but that breaks "-o"! And other chunks that get mutated by the driver.
-            # Also, if it's an input file i.e. doesn't look like an option, we always pass it through.
-            if [[ "${driver_plus_identified_args[$(( $n - 1 ))]}" != "-Xpreprocessor" ]] # EXTRACTED here
-            then
-                # it's a match!
-                # we assume it passes through
-                arg_prefix=""
-                suppress_arg=0
-            else
-                # no match!
-                # leave the defaults in place, so that we qualify it.
-                true
-            fi
-        done
 
         if [[ $suppress_arg -eq 0 ]]; then
             if [[ $n_identified -gt 0 ]]; then
@@ -5660,6 +5665,9 @@ lift_gcc_cc1_to_cc () {
             for n in `seq $(( $inposn + 1 )) $(( $inposn + $inc - 1 ))`; do
                 output_one "${gcc_cc1_args[$n]}" "$arg_prefix"
             done
+        else
+            # WARN
+            debug_print 3 "Suppressing believed-driver-choking arg $arg ${arg_prefix:+(prefix: ${arg_prefix})}" 1>&2
         fi
         suppress_arg=0
         inposn=$(( $inposn + $inc ))
