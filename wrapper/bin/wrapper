@@ -5593,7 +5593,7 @@ lift_gcc_cc1_to_cc () {
         if [[ -v gcc_cc1_input_files_by_argposn[$inposn] ]]; then
             # let input files pass through
             arg_prefix=""
-            suppress_arg=""
+            suppress_arg=0
         else
             # it's not an input file...
             # is it a head word that was *passed to* the driver when we scanned its command?
@@ -5627,12 +5627,14 @@ lift_gcc_cc1_to_cc () {
                       "${awk_pre}${gcc_driver_optawk}${awk_post}" \
                       -v suppress_warnings=1
                 )" #"
+                # incs_by_argposn is only set for incs greater than one
                 reported_inc="$( sed -n '/^incs_by_argposn\[1\]=/ {s///;p}' <<<"$awk_output" | sed 's/^[[:blank:]]*$/1/' | tr -cd '0-9' )"
+                # ... so when using reported_inc, default to 1
                 reported_unrecognised="$( tail -n3 <<<"$awk_output" | sed -n '/^unrecognised=/ {s///;p}' )"
                 debug_print 3 "awk output: $awk_output" 1>&2
-                debug_print 2 "chunk length $inc beginning ${gcc_cc1_args[$inposn]}: reported inc? $reported_inc ; unrecog? $reported_unrecognised" 1>&2
-                if ! [[ $reported_inc -eq $inc ]] || \
-                     ( [[ $inc -eq 1 ]] && [[ $reported_unrecognised -eq 1 ]]); then
+                debug_print 2 "chunk length $inc beginning ${gcc_cc1_args[$inposn]}: reported inc? ${reported_inc:-(defaulted to 1)}; unrecog? $reported_unrecognised" 1>&2
+                if ! [[ ${reported_inc:-1} -eq ${inc:-1} ]] || \
+                     ( [[ ${inc:-1} -eq 1 ]] && [[ $reported_unrecognised -eq 1 ]]); then
                     # it was not recognised by the driver
                     if [[ $is_pp -eq 1 ]]; then
                         arg_prefix="-Xpreprocessor"
@@ -5675,7 +5677,8 @@ lift_gcc_cc1_to_cc () {
                 output_one "${gcc_cc1_args[$n]}" "$arg_prefix"
             done
         else
-            # WARN
+            # WARN -- FIXME: we should make this more prominent for cases that
+            # are not known to us, as it is a common source of breakage.
             debug_print 3 "Suppressing believed-driver-choking arg $arg ${arg_prefix:+(prefix: ${arg_prefix})}" 1>&2
         fi
         suppress_arg=0
