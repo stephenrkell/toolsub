@@ -3258,6 +3258,8 @@ gcc_cc1_optawk='# BEGIN GENERATED gcc_cc1_optawk
 /^(-g)([1-9])$/ { fullopt=$0; canonopt="-g"; optarg=gensub(/^(-g)([1-9])$/, "\\2", 1); inc=1; do_output(fullopt); next; }
 /^(--auxbase-strip)$/     { fullopt=$0; canonopt=deesc("--auxbase-strip"); snarfing_optarg=1; inc=2; next; }
 /^(-auxbase-strip)$/     { fullopt=$0; canonopt=deesc("-auxbase-strip"); snarfing_optarg=1; inc=2; next; }
+/^(--auxbase)$/     { fullopt=$0; canonopt=deesc("--auxbase"); snarfing_optarg=1; inc=2; next; }
+/^(-auxbase)$/     { fullopt=$0; canonopt=deesc("-auxbase"); snarfing_optarg=1; inc=2; next; }
 '
 
 clang_optawk='# BEGIN GENERATED clang_optawk
@@ -5776,9 +5778,13 @@ ensure_driver_best_guess () {
 # for the sourcing client? That's not right for all cases in
 # the case statement below, so we run it only in the branch here.
 (return 0 2>/dev/null) && being_sourced=1 || being_sourced=0
-if [[ $being_sourced -eq 1 ]]; then
+if [[ -z "$CC_WRAPPER_SOURCE_TO_RUN" ]] && [[ $being_sourced -eq 1 ]]; then
     return
 fi
+# Wait a minute... don't we want to be sourceable? Since a common
+# use case is to define a function my_cc () { ... } and then source
+# the main wrapper script. How can we restore that use case?
+# Hacked in the CC_WRAPPER_SOURCE_TO_RUN test above.
 
 case "$0" in
     (*cflags|*cppflags|*cxxflags)

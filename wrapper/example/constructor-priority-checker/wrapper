@@ -3,11 +3,6 @@
 # HACK: know where to find toolsub
 TOOLSUB="${TOOLSUB:-"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/../../..}" #"
 
-# set ourselves as the wrapper
-WRAPPER="$0"
-# source the wrapper funcs
-. "${WRAPPER_FUNCS:-${TOOLSUB}/wrapper/lib/wrapper-funcs.sh}"
-
 # Our check works by observing a single cc1 invocation...
 # already-preprocessed source goes in, and assembly comes out.
 # We cross-check each. We pass the cc1 preprocessed input
@@ -16,7 +11,7 @@ WRAPPER="$0"
 # incantations in each case. If it doesn't, we flag an warning.
 my_cc1 () {
     # run the compiler
-    "$@"
+    $CC_DRIVER "$@"
     status=$?
     if ! [[ $status -eq 0 ]]; then return $status; else
     # Now do our check... our caller has told us what infiles and outfile are
@@ -51,7 +46,7 @@ my_cc1 () {
     done
     fi
 }
-CC1WRAP=my_cc1
-
+CC=my_cc1
+export CC_WRAPPER_SOURCE_TO_RUN=1
 # delegate to the generic wrapper -- we've set WRAPPER so it won't re-source the funcs
 . ${TOOLSUB}/wrapper/bin/wrapper

@@ -2,7 +2,7 @@ THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 SRCROOT := $(realpath $(dir $(THIS_MAKEFILE))/../..)
 
 .PHONY: default
-default: compiler_args.cmx mkstemp_stubs.o
+default: mkstemp_stubs.o
 
 OCAMLFIND ?= ocamlfind
 OCAMLOPTFLAGS += -fPIC
