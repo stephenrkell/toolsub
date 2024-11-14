@@ -2,6 +2,9 @@ open Compiler_args
 open Unix
 open Feature
 
+external mkstemp: string -> Unix.file_descr * string = "caml_mkstemp"
+external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
+
 let runCppDivertingToTempFile maybeSuffix argChunks basicInfo =
     let saveTemps = ref false in
     let ppPluginsToLoadReverse = ref [] in
