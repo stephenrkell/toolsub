@@ -90,11 +90,11 @@ public:
       << TheRewriter.getRewrittenText(eSubRight->getSourceRange()) << "'\n";
     llvm::errs() << "Initially whole binary expression is: `"
       << TheRewriter.getRewrittenText(eOuter->getSourceRange()) << "'\n";
-     TheRewriter.ReplaceText(
+    TheRewriter.ReplaceText(
       eOuter->getSourceRange().getBegin(),
       TheRewriter.getRewrittenText(eOuter->getSourceRange()).length(),
       overallReplacement
-     );
+    );
     llvm::errs() << "Now left-hand subexpression is:  `"
       << TheRewriter.getRewrittenText(eSubLeft->getSourceRange()) << "'\n";
     llvm::errs() << "Now right-hand subexpression is:  `"

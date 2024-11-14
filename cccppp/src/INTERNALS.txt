@@ -109,7 +109,7 @@ What happened?
 
 My best guess is that this is a boundary condition issue.
 Each subexpression's source begin/end locations are
-essentially pointers into a big conbimed buffer.
+essentially pointers into a big combined buffer.
 When rewriting,
 for all subexpressions that started *strictly after* the rewritten range start,
 libClang knows to shift their pointers into the buffer
@@ -137,6 +137,14 @@ but also we could rewrite it to
 p [0]
 
 in which case it should not.
+
+            ** Does this matter, given that we rewrite in post-order traversal?
+            If we screw up its view of subexpressions,
+            it might still serialize out a valid entire file.
+
+            Investigations with Shreesh show that compound rewrites
+            go wrong (brackets going missing, probably at the end of rewritten expressions)
+            but it's not clear what's going on.
 
 In any case, what it does is wrong because
 in general the 'net gain or loss' in characters

@@ -2,7 +2,7 @@ THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 CCCPPP_PREFIX ?= $(realpath $(dir $(THIS_MAKEFILE))/..)
 
 # HACK: for now, force c++11
-BASIC_CXXFLAGS += -std=c++11 -save-temps
+BASIC_CXXFLAGS += -std=gnu++11 -save-temps
 
 # We build all our tests by running them through our cccppp wrapper.
 CXXFLAGS += `$(CCCPPP_PREFIX)/bin/cccppp-cxxflags` $(BASIC_CXXFLAGS)
