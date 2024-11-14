@@ -1,7 +1,7 @@
 -include config.mk
 
 .PHONY: default
-default: cilpp-recursive wrapper-recursive cccppp-recursive
+default: cilpp-recursive wrapper-recursive #cccppp-recursive
 
 .PHONY: cilpp-recursive wrapper-recursive cccppp-recursive
 
