@@ -58,9 +58,11 @@
  * wrapper script: if it sets CC_IDENTIFIED_ARGS, it can tell us where to find our args at 
  * any point in the command line.
  *)
-open Compiler_args
 open Unix
 open Feature
+
+external mkstemp: string -> Unix.file_descr * string = "caml_mkstemp"
+external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
 
 let debug_level : int = int_of_string (Sys.getenv "DEBUG_CC")
 

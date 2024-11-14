@@ -12,6 +12,9 @@
 open Compiler_args
 open Unix
 
+external mkstemp: string -> Unix.file_descr * string = "caml_mkstemp"
+external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
+
 let () =
     let argList = Array.to_list Sys.argv in
     let (argChunks, basicInfo) = scanAndChunkCppArgs argList in
