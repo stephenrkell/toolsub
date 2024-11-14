@@ -49,9 +49,9 @@ export CIL_INSTALL
 OCAMLLIBS := str.cmxa nums.cmxa unix.cmxa cil.cmxa #frontc.cmxa
 # we use -linkall to include the whole cmxa, so that plugins can
 # dynlink against any of its symbols.
-cilpp: compiler_args.cmx cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
+cilpp: cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
-cilprint: compiler_args.cmx cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
+cilprint: cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
 
 %.cmxs: %.cmx

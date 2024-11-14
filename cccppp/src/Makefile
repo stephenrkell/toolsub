@@ -50,6 +50,8 @@ cccppp-tool: main.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 interstitial-tool: interstitial.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
+simple-tool: simple.o
+	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 dump: dump.o
 	$(CXX) -o $@ $+ $(LDFLAGS) $(LDLIBS)
 
@@ -66,7 +68,7 @@ vpath %.o $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 
 OCAMLLIBS := str.cmxa nums.cmxa unix.cmxa
 
-interstitial simple cccppp: compiler_args.cmx cccppp.ml mkstemp_stubs.o
+interstitial simple cccppp: cccppp.ml mkstemp_stubs.o
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $+ -linkpkg -linkall
 
 %.cmxs: %.cmx
