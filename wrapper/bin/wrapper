@@ -187,8 +187,8 @@ our_filename="${BASH_SOURCE[0]}"
 looks_like_driver_command () {
     # initially $1 is the command name
     case "$1" in
-        (*sh)   
-            echo "Bailing rather than believing driver is $1" 1>&2
+        (*sh)
+            echo "Did not believe that driver is $1" 1>&2
             return 1
         ;;
         (*)
@@ -5773,18 +5773,17 @@ ensure_driver_best_guess () {
 }
 
 # Now check directly if we're being sourced, and return now if so?
-# Probably comparing "$0" to "${BASH_SOURCE[0]}" is the way to go.
-# Then maybe we should just run the above code and set CC_DRIVER
-# for the sourcing client? That's not right for all cases in
-# the case statement below, so we run it only in the branch here.
-(return 0 2>/dev/null) && being_sourced=1 || being_sourced=0
-if [[ -z "$CC_WRAPPER_SOURCE_TO_RUN" ]] && [[ $being_sourced -eq 1 ]]; then
-    return
-fi
 # Wait a minute... don't we want to be sourceable? Since a common
 # use case is to define a function my_cc () { ... } and then source
 # the main wrapper script. How can we restore that use case?
 # Hacked in the CC_WRAPPER_SOURCE_TO_RUN test above.
+#
+# If being sourced just for functions,  maybe we should just run the above code
+# (defining functions) and set CC_DRIVER for the sourcing client? Setting CC_DRIVER
+# is not right for all cases in the case statement below, so put it in ensure_driver_best_guess
+# which we run only in the relevant branches below.
+#
+# In short, we can run the case statement and bail immediately below....
 
 case "$0" in
     (*cflags|*cppflags|*cxxflags)
@@ -5911,6 +5910,12 @@ case "$0" in
         return >/dev/null 2>&1 || { echo "Did not understand our own name: $0" 1>&2; exit 1; }
     ;;
 esac
+
+# OK, now bail if we're being sourced and not in a "yes but really run it" way.
+(return 0 2>/dev/null) && being_sourced=1 || being_sourced=0
+if [[ -z "$CC_WRAPPER_SOURCE_TO_RUN" ]] && [[ $being_sourced -eq 1 ]]; then
+    return
+fi
 
 # In general, we want to run the command that the driver is running.
 # To hook preprocessing, although we could wrap the GCC-private
