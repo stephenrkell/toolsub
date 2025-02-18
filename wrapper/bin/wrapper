@@ -151,6 +151,20 @@ debug_print () {
     fi
 }
 
+split_words_into_array () {
+    declare -n argarray="$1"
+    local word="$2"
+    # If we're given "", don't pass back a 1-element array holding the empty string
+    if [[ -z "$word" ]]; then return 0; fi
+    # based on an xargs hack due to https://superuser.com/questions/1529226/get-bash-to-respect-quotes-when-word-splitting-subshell-output
+    while IFS= read -r -d '' arg; do
+        #debug_print 2 "Adding word $arg, array size initially ${#argarray[@]}"
+        argarray+=("$arg")
+        #debug_print 2 "Array size now ${#argarray[@]} ('${argarray[@]}')"
+    done < \
+      <(echo "$word" | xargs printf '%s\0')
+}
+
 # CC_DRIVER_ARGS is a single string which we expand as $CC_DRIVER_ARGS, so
 # we need to quote it.
 #
@@ -187,8 +201,8 @@ our_filename="${BASH_SOURCE[0]}"
 looks_like_driver_command () {
     # initially $1 is the command name
     case "$1" in
-        (*sh)   
-            echo "Bailing rather than believing driver is $1" 1>&2
+        (*sh)
+            echo "Did not believe that driver is $1" 1>&2
             return 1
         ;;
         (*)
@@ -4955,7 +4969,11 @@ scan_generic_awk () {
     declare -n optposns_by_fullopt=${var_prefix}_optposns_by_fullopt
     declare -n optargposns_by_canonopt=${var_prefix}_optargposns_by_canonopt
     declare -n optargs_by_argposn=${var_prefix}_optargs_by_argposn
-
+    # Sanity check: these should be empty! We are going to append to them
+    if [[ ${#optposns_by_fullopt[@]} -gt 0 ]]; then
+        echo "INTERNAL ERROR: already scanned: $var_prefix" 1>&2
+        exit 1
+    fi
     #cat >"$awkfile" <<<"${awk_pre}$( $optlinefunc | optlines_to_awk)${awk_post}${awk_do_output}"
     declare -n optawk="$awkvar"
     debug_print 2 "awk program ($awkvar) has $(echo "$optawk"  | wc -l ) option lines"
@@ -5073,7 +5091,7 @@ parse_assembler_command () {
 # To minimise subprocesses in the following, we output an array
 # and then use IFS=',' to comma-separate it
 list_fulloptposns () {
-    output=""
+    local output=""
     local prefix="$1"
     shift
     declare -n optposns_by_fullopt=${prefix}_optposns_by_fullopt
@@ -5123,7 +5141,7 @@ setarr_fulloptposns () {
     #eval ${prefix}_fulloptposns_count=$ctr
 }
 list_optposns () {
-    output=""
+    local output=""
     local prefix="$1"
     shift
     declare -n optposns_by_canonopt=${prefix}_optposns_by_canonopt
@@ -5140,7 +5158,7 @@ list_optposns () {
     echo "$output"
 }
 list_optargposns () {
-    output=""
+    local output=""
     local prefix="$1"
     shift
     declare -n optargposns_by_canonopt=${prefix}_optargposns_by_canonopt
@@ -5214,9 +5232,9 @@ command_is_pp () {
         (*)  local doing_m=1 ;;
     esac
     local result=0
-    local reason="default"
+    reason="default"
     case "${optposns_by_canonopt["-E"]}" in
-        ('') result=1; reason="do not have -E" # not pp
+        ('') result=1; reason="do not have -E (optposns_by_canonopt: ${optposns_by_canonopt[@]})" # not pp
         ;;
         (*) # looks like it is pp, but are we suppressing preprocessor output?
             if [[ $doing_m -eq 1 ]]; then
@@ -5353,11 +5371,6 @@ lift_gcc_cc1_to_cc () {
     # OH, but what about driver-generated options if we are pp? Then we will
     # spuriously, but *probably* harmlessly, qualify them with -Xpreprocessor.
 
-    # we need already to have done this 'declare' stuff in the caller, or it won't be able to see the vars
-    #prefix="gcc_cc1" eval "$declare_scan_outputs"
-    scan_generic_awk gcc_cc1_optawk_plus_identified_optawk gcc_cc1 \
-           "${cc1:-cc1}" "$@"
-    # are we pp?
     if command_is_pp gcc_cc1; then is_pp=1; else is_pp=0; fi
     debug_print 2 "is pp (1 means yes)? $is_pp" 1>&2
 
@@ -5419,12 +5432,14 @@ lift_gcc_cc1_to_cc () {
     #     -- can cc1 take -MD _ -MF _? yes, but the later overrides the earlier
     #     -- so we rewrite to -MD -MF <later-given filename>
     # - drop anything not driver-friendly (by patterns)
+    # - if we're pp, drop -E as it will get re-added
     # - if we're pp, put "-Xpreprocessor" before anything we saw in the driver args
     #     that was -Wp- or -Xpreprocessor-qualified
     #     if we're sure this is the same arg.
     #        NOTE that in the case of -Wp,arg1,arg2, we need to put -Xpreprocessor before
     #        both arg1 and arg2.
-    outctr=1  # we start at position 1
+    local outctr=1  # we start at position 1
+    e_argind="$(get_optargposn_greatest "gcc_cc1" "-E")"
     md_argind="$(get_optargposn_greatest "gcc_cc1" "-MD" "-MMD")"
     mf_argind="$(get_optargposn_greatest "gcc_cc1" "-MF" )"
     debug_print 3 "md, mf arginds: $md_argind, $mf_argind"
@@ -5559,6 +5574,10 @@ lift_gcc_cc1_to_cc () {
             debug_print 3 "Special -MD handling has nothing to do at $inposn"
         fi
         # if we got here, we are not dealing with -MD
+        if [[ "$arg" == "-E" ]]; then
+            inposn=$(( $inposn + 1 ))
+            continue
+        fi
 
         # how many will we inc by?
         inc=${gcc_cc1_incs_by_argposn[$inposn]:-1}
@@ -5694,7 +5713,7 @@ lift_gcc_cc1_to_cc () {
     export CC_IDENTIFIED_ARGS
 }
 detraditionalize_clang_if_needed () {
-    outctr=1  # we start at position 1
+    local outctr=1  # we start at position 1
     traditional_cpp_argind="$(get_optposn_greatest "clang" "-traditional-cpp" "--traditional-cpp")"
     local inposn=1
     while [[ $inposn -le ${clang_argcount} ]]; do
@@ -5773,18 +5792,17 @@ ensure_driver_best_guess () {
 }
 
 # Now check directly if we're being sourced, and return now if so?
-# Probably comparing "$0" to "${BASH_SOURCE[0]}" is the way to go.
-# Then maybe we should just run the above code and set CC_DRIVER
-# for the sourcing client? That's not right for all cases in
-# the case statement below, so we run it only in the branch here.
-(return 0 2>/dev/null) && being_sourced=1 || being_sourced=0
-if [[ -z "$CC_WRAPPER_SOURCE_TO_RUN" ]] && [[ $being_sourced -eq 1 ]]; then
-    return
-fi
 # Wait a minute... don't we want to be sourceable? Since a common
 # use case is to define a function my_cc () { ... } and then source
 # the main wrapper script. How can we restore that use case?
 # Hacked in the CC_WRAPPER_SOURCE_TO_RUN test above.
+#
+# If being sourced just for functions,  maybe we should just run the above code
+# (defining functions) and set CC_DRIVER for the sourcing client? Setting CC_DRIVER
+# is not right for all cases in the case statement below, so put it in ensure_driver_best_guess
+# which we run only in the relevant branches below.
+#
+# In short, we can run the case statement and bail immediately below....
 
 case "$0" in
     (*cflags|*cppflags|*cxxflags)
@@ -5912,6 +5930,12 @@ case "$0" in
     ;;
 esac
 
+# OK, now bail if we're being sourced and not in a "yes but really run it" way.
+(return 0 2>/dev/null) && being_sourced=1 || being_sourced=0
+if [[ -z "$CC_WRAPPER_SOURCE_TO_RUN" ]] && [[ $being_sourced -eq 1 ]]; then
+    return
+fi
+
 # In general, we want to run the command that the driver is running.
 # To hook preprocessing, although we could wrap the GCC-private
 # cc1/cc1plus command, we'd rather wrap the well-documented "cpp"
@@ -5942,28 +5966,53 @@ case "$1" in
         # print out how we scanned the command line
         declare -a outargs
         prefix="gcc_cc1" eval "$declare_scan_outputs"
-        count_words () {
-            echo $#
-        }
+        # command_is_pp does not read "$@" -- we need to do the scan ourselves
+        # Hoist our can gcc_cc1 of gcc_cc1_plus_identified here, to save repetition
+        prefix="gcc_cc1" eval "$declare_scan_outputs"
+        cc1="$1"
+        shift
+        scan_generic_awk gcc_cc1_optawk_plus_identified_optawk gcc_cc1 \
+           "${cc1:-cc1}" "$@"
+        # now we can test: are we pp?
         if command_is_pp "gcc_cc1" "$@"; then
+            debug_print 2 "gcc_cc1 is_pp? true"
+            debug_print 2 "client-set CPP is $CPP"
+            # "CPP" really means "driver-like program to which we will pass a lifted
+            # driver command line that does preprocessing only". A real 'cpp' command
+            # may or may not work... in fact it probably won't because we will probably
+            # generate args like "-Xpreprocessor". We do not add "-E", but this can be
+            # embedded.
             CPP="${CPP:-${CC_DRIVER} -E}"
-            lift_gcc_cc1_to_cc `count_words $CPP` "$@"
-            # the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
-            debug_print 2 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
+            # remember CPP may have embedded quotes... expand into an array
+            declare -a cpp_words
+            split_words_into_array cpp_words "$CPP"
+            words_count="${#cpp_words[@]}"
+            debug_print 2 "chosen CPP is $CPP ($words_count words)"
+            # we are going to re-scan during lifting
+            prefix="gcc_cc1_plus_identified" eval "$declare_scan_outputs"
+            lift_gcc_cc1_to_cc $words_count "$@"
+            ## the lifter tell us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
+            #debug_print 2 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
             # CPP might be the driver (cc -E) or it might be a well-matched
             # bona fide 'cpp' command... might it? Well, not in general... we lift to
             # the driver command line language, so if the original driver command used
             # "-Xpreprocessor" or "-Wp", we will re-create these in the lifted command.
-            # Most cpp options will just pass through, so it's rare to use -Wp etc.
-            do_exec "CPP" ${CPP} "${outargs[@]}"
+            # Most cpp options will just pass through, in theory....
+            do_exec "CPP" "${cpp_words[@]}" "${outargs[@]}"
         else
+            debug_print 2 "gcc_cc1 is_pp? false, reason: $reason ($@)"
             # NOTE the special placement of "-S" here. C compilers will try to produce
             # a fully linked output, so we always want the -S.
             CC="${CC:-${CC_DRIVER}} -S"
-            lift_gcc_cc1_to_cc `count_words $CC` "$@"
-            # the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
-            debug_print 2 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
-            do_exec "CC" ${CC} "${outargs[@]}"
+            # remember CC may have embedded quotes... expand into an array
+            declare -a cc_words
+            split_words_into_array cc_words "$CC"
+            # we are going to re-scan during lifting
+            prefix="gcc_cc1_plus_identified" eval "$declare_scan_outputs"
+            lift_gcc_cc1_to_cc ${#cc_words[@]} "$@"
+            ## the lifter tells us if we're doing cpp or cc-proper, by looking at ${prefix}_optposns_by_canonopt
+            #debug_print 2 "gcc_cc1_optposns_by_canonopt: ${gcc_cc1_optposns_by_canonopt[@]}"
+            do_exec "CC" "${cc_words[@]}" "${outargs[@]}"
         fi
         ;;
     (*/clang)
