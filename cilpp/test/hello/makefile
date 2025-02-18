@@ -1,1 +1,2 @@
-include ../rules.mk
+hello: hello.c
+include ../Makerules
