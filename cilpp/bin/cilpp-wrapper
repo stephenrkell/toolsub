@@ -20,6 +20,7 @@ export CC_IDENTIFY_ARGS
 # in the wrapper funcs, no? But it does not... it returns before that.)
 . "$wrapper_funcs"  || \
   { echo "Could not source wrapper functions (tried: $wrapper_funcs)" 1>&2; exit 1; }
+
 ensure_driver_best_guess
 test -n "$CC_DRIVER" || \
   { echo "Could not guess a plausible CC_DRIVER" 1>&2; exit 1; }
@@ -28,8 +29,12 @@ cilpp_exe="$(dirname "$0")"/cilpp
 CPP="$cilpp_exe -real-cpp \"$real_cpp\""
 export CPP
 
-# now run the real wrapper... if we are -cflags, we will
-# just print the standard wrapper cflags and exit, EXCEPT
+# now run the real wrapper... -- we can exec because we are not using
+# any shell function we define.
+# if we are -cflags, we will just print the standard wrapper cflags and exit, EXCEPT
 # that those 'standard' wrapper flags will be modified to name *this* script as the wrapper!
 # Which will set CPP and invoke the wrapper, and so on....
+# E.g. if we are being run as the -wrapper, then -### will think
+# that we are running /path/to/cilpp-wrapper /path/to/cc1 -E ...
+# but ACTUALLY, cilpp-wrapper should substitute that cc1 for our own CPP.
 exec "$wrapper_funcs" "$@"
