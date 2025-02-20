@@ -9,7 +9,7 @@ toplevel-default:
 	for f in [a-z]*; do $(MAKE) -C $$f || break; done
 
 # We build all our tests by running them through our cilpp wrapper.
-CFLAGS += `$(CILPP_PREFIX)/bin/cilpp-cflags` $(BASIC_CFLAGS)
+CFLAGS += `$(CILPP_PREFIX)/bin/cilpp-cflags` $(BASIC_CFLAGS) -Wp,-save-temps
 # With no passes enabled, it still builds via CIL and so should
 # catch problems with the cilpp infrastructure.
 

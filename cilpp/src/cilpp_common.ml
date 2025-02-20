@@ -8,7 +8,7 @@ let debug_level : int = try int_of_string (Sys.getenv "DEBUG_CC") with Not_found
 
 let debug_println level str = if level > debug_level then ()
     else (output_string Pervasives.stderr (str ^ "\n"); flush Pervasives.stderr)
-    
+
 (* Test whether a string matches a prefix... but instead of returning a
  * boolean, return None if it doesn't and Some(suffix) if it does, i.e.
  * returning the part of the string that follows the prefix. *)
@@ -29,6 +29,17 @@ let really = function Some(optVal) -> optVal | None -> failwith "really None"
 
 (* FIXME: replicate shell semantics more properly *)
 let wordSplit str = String.split_on_char ' ' str
+
+(* Creating a local temporary file *)
+let createLocalTemp (basename: string) (fullSuffix : string) : Unix.file_descr * string =
+    let rec createWithInfix maybeInfix =
+        let infixString = match maybeInfix with None -> "" | Some(n) -> string_of_int n in
+        let nextInfix m = match maybeInfix with None -> 0 | Some(n) -> n+1 in
+        let fullName = (basename ^ infixString ^ fullSuffix) in
+        try (Unix.openfile fullName [O_EXCL; O_RDWR; O_CREAT] 0o660, fullName)
+        with Unix_error (EEXIST, _, _) when nextInfix maybeInfix < 256 -> (* give up after 256 *)
+            createWithInfix (Some (nextInfix maybeInfix))
+    in createWithInfix None
 
 let runCommand cmdFriendlyName argvList =
     (*
@@ -233,8 +244,22 @@ let prepareCilFile argArr =
                | Some(n) -> Some(String.sub outputFileName n ((String.length outputFileName) - n))
     in
     let (newTempFd, newTempName) =
-        let suffix = if maybeSuffix <> None then really maybeSuffix else ".i"
-        in mkstemps ("/tmp/tmp.XXXXXX.cilpp" ^ suffix) (String.length ".cilpp" + String.length suffix)
+        let fileTypeSuffix = if maybeSuffix <> None then really maybeSuffix else ".i" in
+        let fullSuffix = ".cilpp" ^ fileTypeSuffix in
+        if !saveTemps then
+            (* If we're saving temps, then we want to create a file locally *)
+            let basename = (* PROBLEM: we don't actually know the input file name! it might be stdin *)
+                match !outputFile with
+                    None -> "-"
+                  | Some fname -> (
+                        let maybeStem = matchesSuffix fileTypeSuffix fname in
+                        match maybeStem with Some stem -> stem
+                      | None -> (* output filename does not end in fileTypeSuffix... use the whole thing *)
+                            fname
+                    )
+            in
+            createLocalTemp basename fullSuffix
+        else mkstemps ("/tmp/tmp.XXXXXX" ^ fullSuffix) (String.length fullSuffix)
     in
     (* Rewrite args. This will strip any arguments that only we understand,
      * and drop '-o' if it existed. *)
