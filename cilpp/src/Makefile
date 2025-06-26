@@ -4,7 +4,7 @@ srcroot := $(realpath $(dir $(THIS_MAKEFILE))/../..)
 -include $(srcroot)/config.mk
 
 .PHONY: default
-default: cilpp cilprint
+default: cilpp cilprint cabsprint
 
 OCAMLFIND ?= ocamlfind
 ifneq ($(MAKECMDGOALS),clean)
@@ -53,6 +53,8 @@ cilpp: cilpp_common.ml cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
 cilprint: cilpp_common.ml cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
+cabsprint: cilpp_common.ml cabsprint.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
+	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
 
 %.cmxs: %.cmx
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+
@@ -66,7 +68,7 @@ cilprint: cilpp_common.ml cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmx
 clean:
 	rm -f cilpp-wrapper
 	rm -f *.o *.cmxa *.cmx *.cmo *.cmxs
-	rm -f cilpp cilprint
+	rm -f cilpp cilprint cabsprint
 
 # FIXME: add some quick self-tests of our wrapping mechanism(s)
 #.PHONY: test
