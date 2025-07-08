@@ -4,13 +4,13 @@ open Feature
 external mkstemp: string -> Unix.file_descr * string = "caml_mkstemp"
 external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
 
-let debug_level : int = int_of_string (Sys.getenv "DEBUG_CC")
+let debug_level : int = try int_of_string (Sys.getenv "DEBUG_CC") with Not_found -> 0
 
 let printCABS chan outFilename = Cprint.printFile chan outFilename
 
 let debug_println level str = if level > debug_level then ()
     else (output_string Pervasives.stderr (str ^ "\n"); flush Pervasives.stderr)
-    
+
 (* Test whether a string matches a prefix... but instead of returning a
  * boolean, return None if it doesn't and Some(suffix) if it does, i.e.
  * returning the part of the string that follows the prefix. *)
@@ -32,6 +32,17 @@ let really = function Some(optVal) -> optVal | None -> failwith "really None"
 (* FIXME: replicate shell semantics more properly *)
 let wordSplit str = String.split_on_char ' ' str
 
+(* Creating a local temporary file *)
+let createLocalTemp (basename: string) (fullSuffix : string) : Unix.file_descr * string =
+    let rec createWithInfix maybeInfix =
+        let infixString = match maybeInfix with None -> "" | Some(n) -> string_of_int n in
+        let nextInfix m = match maybeInfix with None -> 0 | Some(n) -> n+1 in
+        let fullName = (basename ^ infixString ^ fullSuffix) in
+        try (Unix.openfile fullName [O_EXCL; O_RDWR; O_CREAT] 0o660, fullName)
+        with Unix_error (EEXIST, _, _) when nextInfix maybeInfix < 256 -> (* give up after 256 *)
+            createWithInfix (Some (nextInfix maybeInfix))
+    in createWithInfix None
+
 let runCommand cmdFriendlyName argvList =
     (*
     let _ =
@@ -44,7 +55,7 @@ let runCommand cmdFriendlyName argvList =
     match fork () with
         | 0 -> (try execvp (List.hd argvList) (Array.of_list argvList)
             with Unix_error(err, _, _) ->
-                output_string Pervasives.stderr ("cannot exec " ^ cmdFriendlyName ^ ": " ^ (error_message err) ^ "\n");
+                output_string Pervasives.stderr ("cannot exec the " ^ cmdFriendlyName ^ " command (`" ^ (List.hd argvList) ^ "'): " ^ (error_message err) ^ "\n");
                 exit 255
           )
         | childPid ->
@@ -159,7 +170,8 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
               stripThisOne (); ()
         | "--" -> debug_println 1 ("Gave up processing args (saw --) at position " ^ (string_of_int i));
                   finished := true; stripThisOne (); () (* Explicit end of our args, so terminate *)
-        | "-Xpreprocessor" when None = !readingExtraArg || isXGuarded (i-1) ->
+        | "-Xpreprocessor" when None = !readingExtraArg
+                                 || (* we *are* reading an extra arg, and expecting an X guard *) isXGuarded (i-1) ->
             (* Handling of -Xpreprocessor is subtle. We want to keep, i.e. pass to the real cpp,
              * an -Xpreprocessor that is *not* guarding one of *our* private options,
              * but strip one that *is* guarding one of our options.
@@ -180,8 +192,8 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
                   readingExtraArg := None;
                   match wasReadingExtraArg with
                       None -> (
-                        debug_println 1 ("Gave up processing args (unrecog'n) at position " ^ (string_of_int i)
-                            ^ " (`" ^ arg ^ "')");
+                        debug_println 1 ("Gave up linear arg processing (unrecog'n) at position " ^ (string_of_int i)
+                            ^ " (`" ^ arg ^ "'); will process identified args next");
                         finished := true;
                         ()
                       ) (* we don't recognise this opt, and it's not an SARG, so terminate *)
@@ -200,17 +212,32 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
      * specially, always use that because the wrapper knows these. *)
     let identified = Sys.getenv "CC_IDENTIFIED_ARGS" in
     let identifiedEnts = wordSplit identified in
-    let identifiedPairs : (int * string) option list = List.map
-        (fun s -> let iStr = Str.global_replace (Str.regexp "^\\([0-9]+\\).*$") "\\1" s in
-            try Some(int_of_string iStr, s)
-            with Failure _ -> (debug_println 1 ("could not grok CC_IDENTIFIED_ARGS token: " ^ s ^ " (" ^ iStr ^ ")"); None)
+    let identifiedTriples : (int * int * string) option list = List.map
+        (fun s -> let iFstStr = Str.global_replace (Str.regexp "^\\([0-9]+\\).*$") "\\1" s in
+                  let iSndStr = Str.global_replace (Str.regexp "^\\([0-9]+\\)-\\([0-9]+\\).*$") "\\2" s in
+            try Some(int_of_string iFstStr, int_of_string iSndStr, s)
+            with Failure _ -> (debug_println 1 ("could not grok CC_IDENTIFIED_ARGS token: " ^ s ^ " (" ^ iFstStr ^ ")"); None)
         )
         identifiedEnts
         (* just snarf the numeric chars, and just use the index they denote
-         * FIXME: second item in pair is bogus, but also, is ignored by processArgAt... clean this up. *)
+         * FIXME: second item in pair is bogus, but also, is ignored by processArgAt...
+         * clean this up. We are not processing -plugin blah.cmxs correctly.
+         *)
     in
-    (List.iter (fun x -> finished := false; match x with None -> () | Some(i, arg) ->
-        debug_println 1 ("Got identified index " ^ (string_of_int i)); processArgAt i arg) identifiedPairs)
+    (List.iter (fun x -> finished := false; match x with None -> () | Some(i1, i2, headArg) ->
+        debug_println 1 ("Got identified index " ^ (string_of_int i1) ^ "-" ^ (string_of_int i2));
+            (* We want to process the identified sub-range of the arguments, but
+             * identifie coords get screwed up by X-guardin. FIXME: probably
+             * the wrapper script should always give us a sane range, including
+             * the X guard positions. Currently it doesn't and we work around it
+             * like so. *)
+            let effectiveI1 = if isXGuarded i1 then i1-1 else i1 in
+            let effectiveI2 = if isXGuarded (i2+1) then i2+1 else i2 in
+            List.iteri (fun i -> fun el ->
+                if i >= effectiveI1 && i <= effectiveI2
+                then processArgAt i argArr.(i)
+            ) argList
+        ) identifiedTriples)
     ;
     (* Can we run the real cpp now? We need a new tmpfile for the output. This should
      * have the same suffix as our output file. If we're run from the driver we should
@@ -224,8 +251,22 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
                | Some(n) -> Some(String.sub outputFileName n ((String.length outputFileName) - n))
     in
     let (newTempFd, newTempName) =
-        let suffix = if maybeSuffix <> None then really maybeSuffix else ".i"
-        in mkstemps ("/tmp/tmp.XXXXXX.cilpp" ^ suffix) (String.length ".cilpp" + String.length suffix)
+        let fileTypeSuffix = if maybeSuffix <> None then really maybeSuffix else ".i" in
+        let fullSuffix = ".cilpp" ^ fileTypeSuffix in
+        if !saveTemps then
+            (* If we're saving temps, then we want to create a file locally *)
+            let basename = (* PROBLEM: we don't actually know the input file name! it might be stdin *)
+                match !outputFile with
+                    None -> "-"
+                  | Some fname -> (
+                        let maybeStem = matchesSuffix fileTypeSuffix fname in
+                        match maybeStem with Some stem -> stem
+                      | None -> (* output filename does not end in fileTypeSuffix... use the whole thing *)
+                            fname
+                    )
+            in
+            createLocalTemp basename fullSuffix
+        else mkstemps ("/tmp/tmp.XXXXXX" ^ fullSuffix) (String.length fullSuffix)
     in
     (* Rewrite args. This will strip any arguments that only we understand,
      * and drop '-o' if it existed. *)
@@ -244,6 +285,7 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
     runCommand (* 'cpp' here is used only in error messages... *) "cpp" newArgs
     ;
     let ppPluginsToLoad = List.rev !ppPluginsToLoadReverse in
+    let _ = output_string Pervasives.stderr ("Loading " ^ (string_of_int (List.length ppPluginsToLoad)) ^ " plugins=features\n") in
     let ppPassesToRun = List.rev !ppPassesToRunReverse in
     (* Okay, run CIL; we need the post-preprocessing line directive style *)
     Cil.lineDirectiveStyle := Some Cil.LinePreprocessorOutput;
@@ -253,7 +295,9 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
      * in an if/else construct. *)
     Cil.useLogicalOperators := true;
     (* do passes *)
-    List.iter Feature.loadWithDeps ppPluginsToLoad;
+    List.iter (fun plugin -> 
+        (output_string Pervasives.stderr ("Loading CIL feature %s" ^ plugin ^ "\n") ; Feature.loadWithDeps plugin)
+    ) ppPluginsToLoad;
     if printOnlyCABS then
             let (chan, outFilename) = match !outputFile with
                   None -> Pervasives.stdout, "(stdout)"
@@ -268,8 +312,8 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
                                    * currently done by `printCABS` too. *)
     else
     let initialCilFile = Frontc.parse newTempName () in
-    let features = ppPassesToRun in
-    List.iter Feature.enable features;
+    List.iter Feature.enable ppPassesToRun;
+
     (* Errormsg.verboseFlag := true; *)
     let currentCilFile = initialCilFile in
     (* HACKED based on CIL's main.ml:
@@ -300,3 +344,19 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
       (* delete temporary file unless -save-temps *)
       (if !saveTemps then () else Unix.unlink newTempName);
       (currentCilFile, outputFile)
+
+let runWithPrinter printer =
+    let (currentCilFile, outputFile) = prepareCilFile Sys.argv in
+    Cil.printerForMaincil := Cil.defaultCilPrinter;
+    (* We are not printing for CIL input *)
+    Cil.print_CIL_Input := false;
+    Cil.msvcMode := false;
+    let (chan, str) = match !outputFile with
+            None -> Pervasives.stdout, "(stdout)"
+          | Some(fname) -> (Pervasives.open_out fname, fname)
+    in
+    let _ = Cil.dumpFile printer chan str currentCilFile
+    in
+    let status = if !Errormsg.hadErrors then 1 else 0 in
+    exit status
+

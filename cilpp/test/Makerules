@@ -1,0 +1,26 @@
+THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+CILPP_PREFIX ?= $(realpath $(dir $(THIS_MAKEFILE))/..)
+
+BASIC_CFLAGS += -save-temps
+
+# If we are running as the top-level makefile, our default is to recurse
+.PHONY: toplevel-default
+toplevel-default:
+	for f in [a-z]*; do $(MAKE) -C $$f || break; done
+
+# We build all our tests by running them through our cilpp wrapper.
+CFLAGS += `$(CILPP_PREFIX)/bin/cilpp-cflags` $(BASIC_CFLAGS) -Wp,-save-temps
+# With no passes enabled, it still builds via CIL and so should
+# catch problems with the cilpp infrastructure.
+
+# testing for ourselves 
+ifeq ($(firstword $(MAKEFILE_LIST)),$(THIS_MAKEFILE))
+.PHONY: clean
+clean::
+	for f in [a-z]*; do $(MAKE) -C $$f clean; done
+else
+# rules to clean one subdir... $$(basename $$(pwd)) cleans the executable file e.g. 'hello'
+.PHONY: clean
+clean::
+	rm -f *.i *.s *.o *.ii $$(basename $$(pwd))
+endif
