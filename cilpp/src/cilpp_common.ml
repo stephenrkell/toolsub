@@ -197,13 +197,13 @@ let prepareCilFile argArr =
     in
     List.iteri processArgAt argList
     ;
-    debug_println 1 ("CC_IDENTIFIED_ARGS is " ^ (try Sys.getenv "CC_IDENTIFIED_ARGS" with Not_found -> "(unset)"));
     (* Now process our CC_IDENTIFIED_ARGS env var, possibly overriding the above.
      * The env var should take precedence because there's a certain partialness
      * in the above approach to scanning: we give up when we see something we don't
      * recognise. If the caller has set options in our env var
      * specially, always use that because the wrapper knows these. *)
-    let identified = Sys.getenv "CC_IDENTIFIED_ARGS" in
+    let identified = try Sys.getenv "CC_IDENTIFIED_ARGS" with Not_found -> "" in
+    debug_println 1 ("CC_IDENTIFIED_ARGS is " ^ identified);
     let identifiedEnts = wordSplit identified in
     let identifiedTriples : (int * int * string) option list = List.map
         (fun s -> let iFstStr = Str.global_replace (Str.regexp "^\\([0-9]+\\).*$") "\\1" s in
