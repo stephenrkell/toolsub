@@ -42,13 +42,11 @@ let createLocalTemp (basename: string) (fullSuffix : string) : Unix.file_descr *
     in createWithInfix None
 
 let runCommand cmdFriendlyName argvList =
-    (*
     let _ =
-    output_string Pervasives.stderr ("About to execute cpp: " ^
+    debug_println 1 ("About to execute as " ^ cmdFriendlyName ^ ": " ^
         (List.fold_left (fun s -> fun arg -> (if s = "" then s else s ^ " ") ^ arg) "" argvList)
         ^ "\n")
     in
-    *)
     (* FIXME: have we left the temporary fd open? caller needs to handle this *)
     match fork () with
         | 0 -> (try execvp (List.hd argvList) (Array.of_list argvList)
