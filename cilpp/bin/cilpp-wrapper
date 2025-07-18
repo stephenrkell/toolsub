@@ -3,7 +3,7 @@
 # We need to source the wrapper funcs,
 # to get the driver, to get the real CPP
 # FIXME: what's the right default here? the ../.. is nasty
-wrapper_funcs="${CC_WRAPPER:-${WRAPPER:-$(dirname "$0")/../../wrapper/bin/wrapper}}"
+wrapper_funcs="${CC_WRAPPER:-${WRAPPER:-$(dirname "${BASH_SOURCE[0]}")/../../wrapper/bin/wrapper}}"
 
 CC_IDENTIFY_ARGS="-save-temps \
 -real-cppSARG \
@@ -25,9 +25,12 @@ ensure_driver_best_guess
 test -n "$CC_DRIVER" || \
   { echo "Could not guess a plausible CC_DRIVER" 1>&2; exit 1; }
 real_cpp="${CPP:-${CC_DRIVER} -E}"
-cilpp_exe="$(dirname "$0")"/cilpp
+cilpp_exe="$(dirname "${BASH_SOURCE[0]}")"/cilpp
 CPP="$cilpp_exe -real-cpp \"$real_cpp\""
 export CPP
+
+# if we're being sourced, we can stop now
+return 2>/dev/null || true
 
 # now run the real wrapper... -- we can exec because we are not using
 # any shell function we define.
