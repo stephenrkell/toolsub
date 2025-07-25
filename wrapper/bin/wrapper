@@ -483,7 +483,7 @@ awk_post='
         if (suppress_warnings == "") {
             printf("WARNING: " var_prefix ": unrecognised optionlike argument " $0 "; assuming argumentless\n")>"/dev/stderr";
             if (issued_helpmsg == 0) {
-                printf("Try: diff -u <( sed -n $'"'"'/# BEGIN GENERATED " var_prefix "_optawk/,$ p\\n/# END GENERATED " var_prefix "_optawk/ q'"'"' '"$0"' ) <( . '"$0"' && " var_prefix "_optlines | optlines_to_awk )\n")>"/dev/stderr";
+                printf("Try: diff -u <( sed -n $'"'"'/# BEGIN GENERATED " var_prefix "_optawk/,$ p\\n/# END GENERATED " var_prefix "_optawk/ q'"'"' '"${BASH_SOURCE[0]}"' ) <( . '"${BASH_SOURCE[0]}"' && " var_prefix "_optlines | optlines_to_awk )\n")>"/dev/stderr";
                 issued_helpmsg=1;
             }
         }
@@ -4367,6 +4367,9 @@ clang_cc1_optawk='# BEGIN GENERATED clang_cc1_optawk
 /^(--linker-option=)(.*)$/ { fullopt=$0; canonopt=deesc("--linker-option"); optarg=gensub(/(--linker-option=)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
 /^(--gpu-max-threads-per-block=)(.*)$/ { fullopt=$0; canonopt=deesc("--gpu-max-threads-per-block"); optarg=gensub(/(--gpu-max-threads-per-block=)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
 /^(--dependent-lib=)(.*)$/ { fullopt=$0; canonopt=deesc("--dependent-lib"); optarg=gensub(/(--dependent-lib=)(.*)/, "\\2", 1); inc=1; do_output(fullopt); next; }
+# END GENERATED clang_cc1_optawk
+# manually added
+/^(-dumpdir)$/     { fullopt=$0; canonopt=deesc("-dumpdir"); snarfing_optarg=1; inc=2; next; }
 '
 clang_driver_optawk='# BEGIN GENERATED clang_driver_optawk
 /^(-z)$/     { fullopt=$0; canonopt=deesc("-z"); snarfing_optarg=1; inc=2; next; }
