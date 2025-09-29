@@ -1,0 +1,63 @@
+#!/bin/bash
+
+driver="$1"
+shift
+
+declare -a words
+split_words () {
+    words=()
+    local word="$1"
+    # If we're given "", don't pass back a 1-element array holding the empty string
+    if [[ -z "$word" ]]; then return 0; fi
+    # based on an xargs hack due to https://superuser.com/questions/1529226/get-bash-to-respect-quotes-when-word-splitting-subshell-output
+    while IFS= read -r -d '' arg; do
+        words+=("$arg")
+    done < <(echo "$word" | xargs printf '%s\0')
+}
+quote_shell () {
+    sed "s/\([\`\\\\\\\"\\\$]\)/\\\\\\1/g"
+}
+
+shify () {
+    ctr=1
+    declare -a cmdterms
+    while read line; do
+        # FIXME: use associative arrays
+        echo "declare -a cmd$ctr"
+        echo -n "cmd${ctr}=("
+        argctr=1
+        # XXX: don't re-word-split $line here -- walk its words
+        # What was our idiom for iterating over shell-quoted words?
+
+        #for w in ${line/%|/}; do
+        #    echo -n "[$argctr]=""$w"" "
+        #    argctr=$(( $argctr + 1 ))
+        #done
+        split_words "${line/%|/}"
+        for n in `seq 0 $(( ${#words[@]} - 1 ))`; do
+            # FIXME: reinstate when using associative arrays
+            #echo -n "[$argctr]="
+            echo -n "\"$( echo "${words[$n]}" | quote_shell)\" "
+            argctr=$(( $argctr + 1 ))
+        done
+        # FIXME: drop "|" from the end of the line, if there
+        echo ")"
+        case "$line" in
+            (*'|') cmdterms[$ctr]='\|' ;;
+            (*)    cmdterms[$ctr]='\;' ;;
+        esac
+        ctr=$(( $ctr + 1 ))
+    done<<<"$("$driver" -### "$@" 2>&1 | grep '^ ')"
+
+    echo -n "echo "
+    # PROBLEM: if we use associative arrays,
+    # expanding them with "@" does not preserve the order with which we assigned the keys.
+    for n in `seq 1 $ctr`; do
+        echo -n "\"\${cmd${n}[@]}\"" ${cmdterms[$n]} " "
+    done
+    echo
+}
+
+#eval $( 
+shify "$@"
+# )
