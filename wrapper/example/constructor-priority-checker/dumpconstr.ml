@@ -1,6 +1,6 @@
-open Cil
+open GoblintCil
 
-let (inputFile : Cil.file) = Frontc.parse Sys.argv.(1) ()
+let (inputFile : GoblintCil.file) = Frontc.parse Sys.argv.(1) ()
 
 (* A function attribute is reduced to an int option option; None if not a constructor *)
 let attrToString (c : int option option) = match c with
@@ -9,7 +9,7 @@ let attrToString (c : int option option) = match c with
       | Some(Some(n)) -> "constructor with priority " ^ (string_of_int n)
 
 (* A constructor is described by an int option *)
-let extractConstrPriorities (attrs : Cil.attributes) (ctxt : string) : int option list = begin
+let extractConstrPriorities (attrs : GoblintCil.attributes) (ctxt : string) : int option list = begin
     List.flatten (List.map (fun a ->
         match a with
             Attr(tag, _) when tag <> "constructor" -> []
@@ -32,7 +32,7 @@ let collectConstrPrio (ctxt : string) (l: location) (collected: int option optio
       | (None, x) -> x         (* initial case can't be bad? FIXME: actually... *)
       | (x, y) when x = y -> x (* same is good *)
       | (Some(coll), maybeConstr) (* seen something not equal *) ->
-            (output_string Pervasives.stderr ("Warning: at " ^
+            (output_string Out_channel.stderr ("Warning: at " ^
                 l.file ^ ":" ^ (string_of_int l.line) ^": function " ^ ctxt ^
                 " declared as " ^
                 (attrToString maybeConstr) ^
