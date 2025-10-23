@@ -17,9 +17,10 @@ OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
 OCAMLFIND ?= ocamlfind
-OCAMLFLAGS +=  -package findlib -package dynlink -I $(CIL_INSTALL)/cil
+OCAMLFLAGS += -package unix -package findlib -package dynlink -package zarith -package str
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/../../wrapper/lib
+OCAMLFLAGS += -I ${CIL_INSTALL}
 vpath %.cmx $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 vpath %.o $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 
@@ -46,13 +47,13 @@ export CIL_INSTALL
 # and CIL libs are okay, but findlib is not; use -package.
 # NOTE also that order matters: put more depended-on entries
 # further left (i.e. the opposite of the usual link order).
-OCAMLLIBS := str.cmxa nums.cmxa unix.cmxa cil.cmxa #frontc.cmxa
+OCAMLLIBS := goblintCil.cmxa mainFeature.cmx
 # we use -linkall to include the whole cmxa, so that plugins can
 # dynlink against any of its symbols.
-cilpp: cilpp_common.ml cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
-	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
-cilprint: cilpp_common.ml cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/cil/cil.cmxa
-	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/cil.cmxa,$+) -linkpkg -linkall
+cilpp: cilpp_common.ml cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/goblintCil.cmxa
+	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/goblintCil.cmxa,$+) -linkpkg -linkall
+cilprint: cilpp_common.ml cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/goblintCil.cmxa
+	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/goblintCil.cmxa,$+) -linkpkg -linkall
 
 %.cmxs: %.cmx
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+

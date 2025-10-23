@@ -12,7 +12,7 @@ ifeq ($(CIL_INSTALL),)
 $(error Please set CIL_INSTALL to your CIL directory (containing a file cil/cil.cmxa))
 endif
 OCAMLFLAGS +=  -package findlib
-OCAMLFLAGS += -I $(CIL_INSTALL)/cil
+OCAMLFLAGS += -I $(CIL_INSTALL)
 
 %.cmxs: %.cmx 
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+
@@ -27,7 +27,7 @@ OCAMLFLAGS += -I $(CIL_INSTALL)/cil
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $< -linkpkg
 	rm -f $*.o
 
-dumpconstr: OCAMLLIBS += $(CIL_INSTALL)/cil/cil.cmxa -package unix -package str -package num
+dumpconstr: OCAMLLIBS += $(CIL_INSTALL)goblintCil.cmxa -package unix -package str -package num
 dumpconstr: dumpconstr.cmx
 
 .SECONDARY: dumpconstr

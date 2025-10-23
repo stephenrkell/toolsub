@@ -1,5 +1,7 @@
 open Unix
-open Feature
+open GoblintCil.Feature
+open MainFeature
+open GoblintCil
 
 external mkstemp: string -> Unix.file_descr * string = "caml_mkstemp"
 external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
@@ -7,7 +9,7 @@ external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
 let debug_level : int = try int_of_string (Sys.getenv "DEBUG_CC") with Not_found -> 0
 
 let debug_println level str = if level > debug_level then ()
-    else (output_string Pervasives.stderr (str ^ "\n"); flush Pervasives.stderr)
+    else (output_string Out_channel.stderr (str ^ "\n"); flush Out_channel.stderr)
 
 (* Test whether a string matches a prefix... but instead of returning a
  * boolean, return None if it doesn't and Some(suffix) if it does, i.e.
@@ -51,7 +53,7 @@ let runCommand cmdFriendlyName argvList =
     match fork () with
         | 0 -> (try execvp (List.hd argvList) (Array.of_list argvList)
             with Unix_error(err, _, _) ->
-                output_string Pervasives.stderr ("cannot exec the " ^ cmdFriendlyName ^ " command (`" ^ (List.hd argvList) ^ "'): " ^ (error_message err) ^ "\n");
+                output_string Out_channel.stderr ("cannot exec the " ^ cmdFriendlyName ^ " command (`" ^ (List.hd argvList) ^ "'): " ^ (error_message err) ^ "\n");
                 exit 255
           )
         | childPid ->
@@ -276,7 +278,7 @@ let prepareCilFile argArr =
     runCommand (* 'cpp' here is used only in error messages... *) "cpp" newArgs
     ;
     let ppPluginsToLoad = List.rev !ppPluginsToLoadReverse in
-    let _ = output_string Pervasives.stderr ("Loading " ^ (string_of_int (List.length ppPluginsToLoad)) ^ " plugins=features\n") in
+    let _ = output_string Out_channel.stderr ("Loading " ^ (string_of_int (List.length ppPluginsToLoad)) ^ " plugins=features\n") in
     let ppPassesToRun = List.rev !ppPassesToRunReverse in
     (* Okay, run CIL; we need the post-preprocessing line directive style *)
     Cil.lineDirectiveStyle := Some Cil.LinePreprocessorOutput;
@@ -288,7 +290,7 @@ let prepareCilFile argArr =
     let initialCilFile = Frontc.parse newTempName () in
     (* do passes *)
     List.iter (fun plugin -> 
-        (output_string Pervasives.stderr ("Loading CIL feature %s" ^ plugin ^ "\n") ; Feature.loadWithDeps plugin)
+        (output_string Out_channel.stderr ("Loading CIL feature %s" ^ plugin ^ "\n") ; MainFeature.loadWithDeps plugin)
     ) ppPluginsToLoad;
     List.iter Feature.enable ppPassesToRun;
     (* Errormsg.verboseFlag := true; *)
@@ -306,7 +308,7 @@ let prepareCilFile argArr =
           (* Run the feature, and see how long it takes. *)
           Stats.time fdesc.Feature.fd_name
             fdesc.Feature.fd_doit currentCilFile
-          with Not_found -> (output_string Pervasives.stderr ("CIL pass " ^ fdesc.Feature.fd_name ^ " raised Not_found!\n"); raise Not_found);
+          with Not_found -> (output_string Out_channel.stderr ("CIL pass " ^ fdesc.Feature.fd_name ^ " raised Not_found!\n"); raise Not_found);
           (* See if we need to do some checking *)
           if !Cilutil.doCheck && fdesc.Feature.fd_post_check then begin
             ignore (Errormsg.log "CIL check after %s\n" fdesc.Feature.fd_name);
@@ -327,10 +329,9 @@ let runWithPrinter printer =
     Cil.printerForMaincil := Cil.defaultCilPrinter;
     (* We are not printing for CIL input *)
     Cil.print_CIL_Input := false;
-    Cil.msvcMode := false;
     let (chan, str) = match !outputFile with
-            None -> Pervasives.stdout, "(stdout)"
-          | Some(fname) -> (Pervasives.open_out fname, fname)
+            None -> Out_channel.stdout, "(stdout)"
+          | Some(fname) -> (open_out fname, fname)
     in
     let _ = Cil.dumpFile printer chan str currentCilFile
     in

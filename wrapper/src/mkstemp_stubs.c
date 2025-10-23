@@ -9,6 +9,7 @@
 #include <caml/memory.h>
 #include <caml/callback.h>
 #include <caml/fail.h>
+#include <caml/unixsupport.h>
 
 // HACK: internal OCaml Unix module detail
 value unix_error_of_code(int code);
