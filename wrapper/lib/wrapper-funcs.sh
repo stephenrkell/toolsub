@@ -8,9 +8,9 @@ do_exec () {
 }
 
 debug_print () {
-    lvl="$1"
+    local lvl="$1"
     shift
-    if [[ "$DEBUG_CC" -ge $lvl ]]; then
+    if [[ ${DEBUG_CC:-0} -ge $lvl ]]; then
         echo "$@" 1>&2
     fi
 }
@@ -63,6 +63,7 @@ do_write_cpp_options_from_normalized_cc1_command () {
             # we are running our own cpp-alike -- filter out non-cpp args
             (-imultiarch|-iremap*) shift || break ;; # skip arg too
             (-quiet|-fhonour-copts) ;; # skip just it
+            (-traditional-cpp) if [[ -n $not_really_traditional ]]; then continue; fi ;;&
             (*)
                 debug_print 2 "Write-cpp: snarfing $1" 1>&2
                 cpp_options[$ctr]="$1"
@@ -121,8 +122,11 @@ do_write_cc_options_from_normalized_cc1_command () {
         if [[ $# -eq 0 ]]; then break; fi
         case "$1" in
             # we are running our own .i-to-.s pass -- filter out cpp-only args
-            (-imultiarch|-iremap*) shift || break ;; # skip arg too
-            (-quiet|-fhonour-copts) ;; # skip just it
+            (-imultiarch|-iremap*|-internal-*|-triple|-main-file-name|-ferror-limit|-target-cpu|-tune-cpu|-mrelocation-model) shift || break ;; # skip arg too
+            (-quiet|-fhonour-copts|-mframe-pointer=all|-mconstructor-aliases|-munwind-tables|-disable-free|-disable-llvm-verifier|-discard-value-names|-debugger-tuning=*) ;; # skip just it
+            (-traditional-cpp) if [[ -n $not_really_traditional ]]; then continue
+                else debug_print 0 "Really traditional" 1>&2; fi ;;&
+            (-cc1) continue; # we are clang, but we want to write a cc command
             (-MD|-MMD) # NASTY: with cc1, -MD has an argument! it's the filename, like with -MF.
                 # with cc or cpp, we have to use -MM?D -MF
                 cc_options[$ctr]="$1"
