@@ -1,63 +1,172 @@
 #!/bin/bash
 
+# usage: ccwrap compiler <options...>
+# e.g.   ccwrap gcc -o /tmp/hello /tmp/hello.c
+
+# What do we do?
+# 1. parse the -### output into commands as lists of words (shell array variables)
+# 2. substitute subcommands as necessary -- this is really for our extender to do
+# 3. lift subcommands back to driver invocations
+
+# snarf the wrapper functions
+# HACK: we use the old version
+. "$(dirname "${BASH_SOURCE[0]}")"/../wrapper/lib/wrapper-funcs.sh
+
+# chomp the driver name
 driver="$1"
 shift
+# get the subcommand lines that the driver wants to run
+case "$driver" in
+    (*gcc*)
+        driver_magic_opts="-no-integrated-cpp"
+    ;;
+    (*clang*)
+        driver_magic_opts="-traditional-cpp"
+        # FIXME: only set not_really_traditional if -traditional-cpp is not present in args
+        not_really_traditional=1  # we will skip -traditional-cpp when writing cc args
+    ;;
+esac
+cmd_lines="$( "$driver" ${driver_magic_opts} -### "$@" 2>&1 | grep '^ ' )"
 
-declare -a words
-split_words () {
-    words=()
+# utility code
+split_words_into () {
+    local arrname="$1"
+    shift
+    eval "${arrname}=()"
     local word="$1"
     # If we're given "", don't pass back a 1-element array holding the empty string
     if [[ -z "$word" ]]; then return 0; fi
     # based on an xargs hack due to https://superuser.com/questions/1529226/get-bash-to-respect-quotes-when-word-splitting-subshell-output
     while IFS= read -r -d '' arg; do
-        words+=("$arg")
-    done < <(echo "$word" | xargs printf '%s\0')
+        debug_print 2 "processing arg $arg" 1>&2
+        eval "${arrname}+=(\"$(printf "%s" "$arg" | quote_shell)\")"
+        debug_print 2 "arr $arrname now has " 1>&2; eval "debug_print 2 \"%s %s\n\" \"\${#${arrname}[@]}\" entries"
+    done < <(xargs printf '%s\0'<<<"$word")
+    debug_print 2 "arr $arrname is now: " 1>&2; eval "debug_print 2 \"%s\\n\" \"\${${arrname}[@]}\""
 }
+# This quotes metacharacters but does not touch spaces!
 quote_shell () {
     sed "s/\([\`\\\\\\\"\\\$]\)/\\\\\\1/g"
 }
-
-shify () {
-    ctr=1
-    declare -a cmdterms
-    while read line; do
-        # FIXME: use associative arrays
-        echo "declare -a cmd$ctr"
-        echo -n "cmd${ctr}=("
-        argctr=1
-        # XXX: don't re-word-split $line here -- walk its words
-        # What was our idiom for iterating over shell-quoted words?
-
-        #for w in ${line/%|/}; do
-        #    echo -n "[$argctr]=""$w"" "
-        #    argctr=$(( $argctr + 1 ))
-        #done
-        split_words "${line/%|/}"
-        for n in `seq 0 $(( ${#words[@]} - 1 ))`; do
-            # FIXME: reinstate when using associative arrays
-            #echo -n "[$argctr]="
-            echo -n "\"$( echo "${words[$n]}" | quote_shell)\" "
-            argctr=$(( $argctr + 1 ))
-        done
-        # FIXME: drop "|" from the end of the line, if there
-        echo ")"
-        case "$line" in
-            (*'|') cmdterms[$ctr]='\|' ;;
-            (*)    cmdterms[$ctr]='\;' ;;
-        esac
-        ctr=$(( $ctr + 1 ))
-    done<<<"$("$driver" -### "$@" 2>&1 | grep '^ ')"
-
-    echo -n "echo "
-    # PROBLEM: if we use associative arrays,
-    # expanding them with "@" does not preserve the order with which we assigned the keys.
-    for n in `seq 1 $ctr`; do
-        echo -n "\"\${cmd${n}[@]}\"" ${cmdterms[$n]} " "
-    done
-    echo
+protect_from_word_splitting () {
+    sed "s/\([ \t]\)/\\\\\\1/g"
 }
 
-#eval $( 
-shify "$@"
-# )
+declare -a cmdterms
+gen_cmds () {
+    ctr=1
+    while read line; do
+        split_words_into "cmd${ctr}" "${line/%|/}"
+        # separators for each command (will ignore for the last) -- can be semicolon or pipe
+        case "$line" in
+            (*'|') cmdterms[$ctr]='|' ;;
+            (*)    cmdterms[$ctr]='&&' ;;
+        esac
+        ctr=$(( $ctr + 1 ))
+    done<<<"$cmd_lines"
+    # now we have variables "cmd1", "cmd2" etc and a 'cmdterms' array
+}
+for n in `seq "$( echo "$cmd_lines" | wc -l )"` ; do
+    eval "declare -a cmd$n"
+done
+gen_cmds
+
+cc1_command_is_pp () {
+    debug_print 2 "is_pp? $@"
+    local ctr=0
+    saw_pp=0
+    outpos=0
+    doing_m=0
+    declare -a seen_args
+    while shift; do
+        ctr="$(( $ctr + 1 ))"
+        seen_args[$ctr]="$1"
+        if [[ -z "$1" ]]; then continue; fi
+        case "$1" in
+         (-o) outfile="$2"; outpos="$(( $ctr + 1 ))";;
+         (-M|-MM) doing_m=1 ;;
+         (-E) saw_pp=1 ;;
+        esac
+    done
+    # If we didn't see an output file, it might mean that
+    # - the default output filename is being used (DOES the driver do this?)
+    # - the output is going to stdout, and it's a make rule (-M, -MM)
+    # - the output is actual compilation stuff and -pipe is being used?
+    # FIXME: support this case once we've seen an example.
+    if [[ $outpos -eq 0 ]] && ! [[ $doing_m -eq 1 ]]; then
+        debug_print 0 "FIXME: can't work with cc1/cc1plus commands with no output file" 1>&2
+        exit 1
+    fi
+    # if we're only preprocessing, or if we have no explicit output file, just run cc1
+    if [[ "$saw_pp" -eq 0 ]]; then
+        debug_print 1 "Wrapping cc1, we don't seem to be doing preprocessing; args ${seen_args[@]}" 1>&2
+        false
+    else
+        debug_print 1 "Wrapping cc1, we seem to be doing a preprocessing step; args ${seen_args[@]}" 1>&2
+        true
+    fi
+}
+
+print_rewritten_commands () {
+    local sep="$1"
+    shift
+    local n
+    for n in `seq 1 ${#cmdterms[@]}`; do
+        declare -n cmd=cmd${n}
+        # We need to print each word of the command we want to execute,
+        # separated by spaces,
+        # such that eval of the entire printed string will run the command.
+        # That means we must shell-quote every word, but also
+        # protect each word from splitting.
+        print_command () {
+            local n
+            for n in `seq 1 $#`; do
+                # echo "blah: ${!n}" 1>&2
+                printf "%s" "${!n}" | quote_shell | protect_from_word_splitting
+                printf " "; # don't protect; this splits our output words
+            done
+        }
+        # detect the cases we want to substitute
+        debug_print 2 "driver is $driver, cmd[0] is ${cmd[0]}"
+        case "${cmd[0]}" in
+            (*/cc1|*/cc1plus|*/clang)
+                local ctr=0
+                # if we're only preprocessing, or if we have no explicit output file, just run cc1
+                if ! cc1_command_is_pp "${cmd[@]}"; then
+                    debug_print 1 "command is not pp"
+                    print_command "${cmd[@]}"
+                else
+                    debug_print 1 "command is pp"
+                    debug_print 1 "Command before cpp-wrapping:" "${cmd[@]}" 1>&2
+                    # convert the cc1/cc1plus options to cpp options
+                    declare -a cpp_options
+                    declare -a cc_options
+                    # Instead of running "cpp", we run "$driver -E". Even that is not simple:
+                    # we must hack around the use of -MD, whose meaning is different on the
+                    # driver command line than on the cpp command line (see GCC bug 91025).
+                    full_cpp_command=(${CPP:-"$driver" "-E"})
+                    write_cc_options_from_cc1_command "${cmd[@]}"
+                    debug_print 1 "cc options: ${cc_options[@]}" 1>&2
+                    full_cpp_command+=("${cc_options[@]}")
+                    debug_print 1 "cpp command:" "${full_cpp_command[@]}" 1>&2
+                    print_command  "${full_cpp_command[@]}"
+                fi # pp vs not pp
+            ;;
+            (*) print_command "${cmd[@]}"
+            ;;
+        esac
+        if ! [[ $n -eq ${#cmdterms[@]} ]]; then
+            printf "%s%s" "${cmdterms[$n]}" "$sep";
+        fi
+    done
+}
+
+# if we have -### in $@, we should just print. we use
+# newline to separate the commands for redability
+for n in `seq 1 $#`; do
+    if [[ "${!n}" == "-###" ]]; then
+        print_rewritten_commands $'\n' 1>&2
+        exit $?
+    fi
+done
+eval "$(print_rewritten_commands)"

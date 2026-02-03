@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# We want the user to be able to do
+#
+# cilpp-ccwrap cc <options...>
+#
+# with the effect that
+# any preprocessing steps are done with cilpp.
+# Simple enough?
+#
+# Any -Wp,<arg> or -Xpreprocessor <arg> should be fed to cilpp directly.
+#
+# One possible way: first lift each subcommand back to a driver invocation,
+# as per our very expensive/slow wrapper(/wrapper.c) script. This requires
+# precise scanning of the command line. Then match on the driver
+# invocation and replace with cilpp -real-cpp <driver> ... as appropriate.
+# This latter part is in cilpp-cflags.
+#
+# A quicker and dirtier way that avoids precise scanning:
+# run the driver adding the approprate de-integrating options (-no-integrated-cpp for
+# gcc, -ftraditional for clang)
+# then pattern-match the subcommands: if seeing any that looks like a preprocessing
+# command, substitute ours, otherwise just execute as normal.
+# PROBLEM: "substitute ours" is easier said than done!
+
+wrapper_funcs="${CC_WRAPPER:-${WRAPPER:-$(dirname "${BASH_SOURCE[0]}")/../../ccwrap/ccwrap}}"
+
+CPP=my_cpp
+my_cpp () {
+    $(dirname "${BASH_SOURCE[0]}")/cilpp -real-cpp "$driver -E" "$@"
+}
+. "$wrapper_funcs"  || \
+  { echo "Could not source wrapper functions (tried: $wrapper_funcs)" 1>&2; exit 1; }
