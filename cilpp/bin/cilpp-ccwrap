@@ -27,7 +27,10 @@ wrapper_funcs="${CC_WRAPPER:-${WRAPPER:-$(dirname "${BASH_SOURCE[0]}")/../../ccw
 
 CPP=my_cpp
 my_cpp () {
-    $(dirname "${BASH_SOURCE[0]}")/cilpp -real-cpp "$driver -E" "$@"
+    # HACK: tell cilpp that realcpp is $driver not $driver -E.
+    # This is because cilpp can't word-split the realcpp option in this revision.
+    # BUT happily ccwrap preserves the "-E" from the cc1 command, so just rely on that.
+    $(dirname "${BASH_SOURCE[0]}")/cilpp -realcpp "$driver" "$@"
 }
 . "$wrapper_funcs"  || \
   { echo "Could not source wrapper functions (tried: $wrapper_funcs)" 1>&2; exit 1; }

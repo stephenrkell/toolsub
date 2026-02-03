@@ -9,7 +9,6 @@
  * we pass through to cpp all our arguments except for any following "-o".
  * Then we run cccppp and output to the intended -o file.
  *)
-open Compiler_args
 open Unix
 
 let () =
