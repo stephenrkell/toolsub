@@ -6,6 +6,8 @@ external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
 
 let debug_level : int = try int_of_string (Sys.getenv "DEBUG_CC") with Not_found -> 0
 
+let printCABS chan outFilename = Cprint.printFile chan outFilename
+
 let debug_println level str = if level > debug_level then ()
     else (output_string Pervasives.stderr (str ^ "\n"); flush Pervasives.stderr)
 
@@ -75,7 +77,7 @@ type cilpp_extra_arg = [
 (* 
  *)
 
-let prepareCilFile argArr =
+let prepareCilFile ?(printOnlyCABS=false) argArr =
     let argList = Array.to_list argArr in
     (* We used to scan our own args. We no longer want to do this. How to get around
      * the "identity crisis" (cpp versus cc -E) and our desire to accept "new" options
@@ -174,6 +176,11 @@ let prepareCilFile argArr =
              * We handle this in the stripThisOne / stripNextOne logic.
              * We always skip over -Xpreprocessor in the main loop. *)
             ()
+        | "-cabs-structure" ->
+            if printOnlyCABS then
+                begin Cprint.printComments := true; stripThisOne () ; () end
+            else
+                    failwith "--cabs-structure only valid when printing CABS representations; try running `cabsprint` instead."; ()
         | arg ->
               if isXGuarded (i-1) then
                 if arg <> "-Xpreprocessor" then failwith "inconsistent guarding mumble"
@@ -285,12 +292,26 @@ let prepareCilFile argArr =
      * might be a conditional expression. So we can't substitute it with a temporary assigned
      * in an if/else construct. *)
     Cil.useLogicalOperators := true;
-    let initialCilFile = Frontc.parse newTempName () in
     (* do passes *)
     List.iter (fun plugin -> 
         (output_string Pervasives.stderr ("Loading CIL feature %s" ^ plugin ^ "\n") ; Feature.loadWithDeps plugin)
     ) ppPluginsToLoad;
+    if printOnlyCABS then
+            let (chan, outFilename) = match !outputFile with
+                  None -> Pervasives.stdout, "(stdout)"
+                | Some(fname) -> (Pervasives.open_out fname, fname)
+            in
+            let cabsFile, cilFile = Frontc.parse_with_cabs newTempName () in
+            printCABS chan cabsFile;
+            (cilFile, outputFile) (* FIXME: this isn't required, but returned because
+                                   * it's the expected return type of `prepareCilFile`.
+                                   * Expected return should be fixed to accomodate CABS files.
+                                   * When that's done, `cabsprint.ml` can do the printing
+                                   * currently done by `printCABS` too. *)
+    else
+    let initialCilFile = Frontc.parse newTempName () in
     List.iter Feature.enable ppPassesToRun;
+
     (* Errormsg.verboseFlag := true; *)
     let currentCilFile = initialCilFile in
     (* HACKED based on CIL's main.ml:
