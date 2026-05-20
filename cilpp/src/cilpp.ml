@@ -61,4 +61,4 @@
 
 open Cilpp_common
 
-let () = runWithPrinter Cil.defaultCilPrinter
+let () = runWithPrinter GoblintCil.defaultCilPrinter

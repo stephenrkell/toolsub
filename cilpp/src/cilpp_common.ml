@@ -1,5 +1,7 @@
 open Unix
-open Feature
+open GoblintCil.Feature
+open MainFeature
+open GoblintCil
 
 external mkstemp: string -> Unix.file_descr * string = "caml_mkstemp"
 external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"

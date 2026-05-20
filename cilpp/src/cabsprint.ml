@@ -1,5 +1,6 @@
 open Unix
 open Cilpp_common
+open GoblintCil
 
 let () = 
         let _ = prepareCilFile ~printOnlyCABS:true Sys.argv in
