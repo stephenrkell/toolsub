@@ -17,10 +17,11 @@ OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
 OCAMLFIND ?= ocamlfind
-OCAMLFLAGS += -package unix -package findlib -package dynlink -package zarith -package str
+OCAMLFLAGS += -package unix -package findlib -package dynlink -package zarith -package str -package yojson -package ppx_deriving_yojson.runtime
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 OCAMLFLAGS += -I ${CIL_INSTALL}
+OCAMLFLAGS += -I ${CIL_INSTALL}/mainFeature
 vpath %.cmx $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 vpath %.o $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 
@@ -47,7 +48,7 @@ export CIL_INSTALL
 # and CIL libs are okay, but findlib is not; use -package.
 # NOTE also that order matters: put more depended-on entries
 # further left (i.e. the opposite of the usual link order).
-OCAMLLIBS := goblintCil.cmxa mainFeature.cmx
+OCAMLLIBS := goblintCil.cmxa mainFeature/mainFeature.cmxa
 # we use -linkall to include the whole cmxa, so that plugins can
 # dynlink against any of its symbols.
 cilpp: cilpp_common.ml cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/goblintCil.cmxa
