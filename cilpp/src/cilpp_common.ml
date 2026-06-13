@@ -1,7 +1,5 @@
 open Unix
-open GoblintCil.Feature
-open MainFeature
-open GoblintCil
+open Feature
 
 external mkstemp: string -> Unix.file_descr * string = "caml_mkstemp"
 external mkstemps: string -> int -> Unix.file_descr * string = "caml_mkstemps"
@@ -296,7 +294,8 @@ let prepareCilFile ?(printOnlyCABS=false) argArr =
     Cil.useLogicalOperators := true;
     (* do passes *)
     List.iter (fun plugin -> 
-        (output_string Pervasives.stderr ("Loading CIL feature %s" ^ plugin ^ "\n") ; Feature.loadWithDeps plugin)
+        (output_string Pervasives.stderr ("Loading CIL feature %s" ^ plugin ^ "\n") ;
+        (* loadWithDeps is in MainFeature under Goblint, Feature under Cil *) loadWithDeps plugin)
     ) ppPluginsToLoad;
     if printOnlyCABS then
             let (chan, outFilename) = match !outputFile with
@@ -350,7 +349,8 @@ let runWithPrinter printer =
     Cil.printerForMaincil := Cil.defaultCilPrinter;
     (* We are not printing for CIL input *)
     Cil.print_CIL_Input := false;
-    Cil.msvcMode := false;
+    (* goblint has removed msvcMode; let's assume it is not set, under classic Cil *)
+    (*Cil.msvcMode := false;*)
     let (chan, str) = match !outputFile with
             None -> Pervasives.stdout, "(stdout)"
           | Some(fname) -> (Pervasives.open_out fname, fname)

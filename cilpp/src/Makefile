@@ -6,10 +6,16 @@ srcroot := $(realpath $(dir $(THIS_MAKEFILE))/../..)
 .PHONY: default
 default: cilpp cilprint cabsprint
 
+ifneq ($(USE_GOBLINT),)
+CIL_CMXA := $(CIL_LIBDIR)/goblintCil.cmxa
+else
+CIL_CMXA := $(CIL_LIBDIR)/cil.cmxa
+endif
+
 OCAMLFIND ?= ocamlfind
 ifneq ($(MAKECMDGOALS),clean)
-ifeq ($(CIL_INSTALL),)
-$(error Please set CIL_INSTALL to your CIL directory (containing a file cil/cil.cmxa))
+ifeq ($(CIL_LIBDIR),)
+$(error Please set CIL_LIBDIR to a directory containing a file $(notdir $(CIL_CMXA)))
 endif
 endif
 
@@ -17,17 +23,30 @@ OCAMLOPTFLAGS += -fPIC
 CFLAGS += -fPIC
 
 OCAMLFIND ?= ocamlfind
-OCAMLFLAGS += -package unix -package findlib -package dynlink -package zarith -package str
+
+OCAMLFLAGS += -package unix -package findlib -package dynlink
+OCAMLFLAGS += -package str
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/lib
 OCAMLFLAGS += -I $(dir $(THIS_MAKEFILE))/../../wrapper/lib
-OCAMLFLAGS += -I ${CIL_INSTALL}
+OCAMLFLAGS += -I $(CIL_LIBDIR)
+
+ifneq ($(USE_GOBLINT),)
+OCAMLFLAGS += -package zarith
+OCAMLFLAGS += -I $(CIL_LIBDIR)/mainFeature
+# set some flags that we don't pass on to goblintCil_compat, which would be circular
+cilpp cilprint cabsprint $(patsubst %.ml,%.cmx,$(filter-out goblintCil_compat.ml,$(wildcard *.ml))): private \
+OCAMLFLAGS += -I $(realpath $(dir $(THIS_MAKEFILE))) -open GoblintCil_compat -open MainFeature
+#cilpp cilprint cabsprint: goblintCil_compat.cmx
+else
+OCAMLFLAGS += -package num
+endif
+
 vpath %.cmx $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 vpath %.o $(dir $(THIS_MAKEFILE))/../../wrapper/lib
 
 export OCAMLFLAGS
 export OCAMLFIND
-export CIL_INSTALL
-
+export CIL_LIBDIR
 
 # IMPORTANT: only list cmxa files here iff they are *not*
 # covered by a -package argument to ocamlfind -- CHECK the
@@ -47,22 +66,45 @@ export CIL_INSTALL
 # and CIL libs are okay, but findlib is not; use -package.
 # NOTE also that order matters: put more depended-on entries
 # further left (i.e. the opposite of the usual link order).
-OCAMLLIBS := goblintCil.cmxa mainFeature.cmx
+OCAMLLIBS += $(CIL_CMXA)
+ifneq ($(USE_GOBLINT),)
+OCAMLLIBS += $(CIL_LIBDIR)/mainFeature/mainFeature.cmxa
+COMPAT_MODULES := goblintCil_compat.cmx
+else
+COMPAT_MODULES :=
+endif
+
+# Need to be careful about building a left-to-right topsort order, i.e.
+# the most depended-on things come first.
+#
+# For goblintCil_compat.cmx, I think it works if it's the first item in $+.
+#
+# Order that works:
+# ocamlfind ocamlopt -o "cilpp" -fPIC \
+  -package unix -package findlib -package dynlink -package str \
+ -I .//lib -I .//../../wrapper/lib \
+ -I /usr/local/src/cil-mbyzhangAlt/_build/install/default/lib/goblint-cil \
+  -package zarith \
+  -I /usr/local/src/cil-mbyzhangAlt/_build/install/default/lib/goblint-cil/mainFeature \
+  -I /var/local/stephen/work/devel/toolsub.git/cilpp/src \
+  -open GoblintCil_compat -open MainFeature \
+  /usr/local/src/cil-mbyzhangAlt/_build/install/default/lib/goblint-cil/goblintCil.cmxa \
+  /usr/local/src/cil-mbyzhangAlt/_build/install/default/lib/goblint-cil/mainFeature/mainFeature.cmxa \
+  goblintCil_compat.cmx \
+  cilpp_common.ml cilpp.ml .//../../wrapper/lib/mkstemp_stubs.o \
+  -linkpkg -linkall
+
 # we use -linkall to include the whole cmxa, so that plugins can
 # dynlink against any of its symbols.
-cilpp: cilpp_common.ml cilpp.ml mkstemp_stubs.o $(CIL_INSTALL)/goblintCil.cmxa
-	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/goblintCil.cmxa,$+) -linkpkg -linkall
-cilprint: cilpp_common.ml cilprint.ml mkstemp_stubs.o $(CIL_INSTALL)/goblintCil.cmxa
-	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/goblintCil.cmxa,$+) -linkpkg -linkall
-cabsprint: cilpp_common.ml cabsprint.ml mkstemp_stubs.o $(CIL_INSTALL)/goblintCil.cmxa
-	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $(filter-out %/goblintCil.cmxa,$+) -linkpkg -linkall
+%: $(COMPAT_MODULES) cilpp_common.ml %.ml mkstemp_stubs.o
+	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $+ -linkpkg -linkall
 
 %.cmxs: %.cmx
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+
 %.cmx %.cmi: %.ml
-	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) -c "$<"
+	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) -c $+
 %.cmo %.cmi: %.ml
-	$(OCAMLFIND) ocamlc -o "$@" $(OCAMLFLAGS) -c "$<"
+	$(OCAMLFIND) ocamlc -o "$@" $(OCAMLFLAGS) -c $+
 %.cma: %.cmo
 	$(OCAMLFIND) ocamlc -o "$@" $(OCAMLFLAGS) -a $+
 

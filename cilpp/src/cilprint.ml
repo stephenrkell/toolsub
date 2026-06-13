@@ -1,4 +1,4 @@
 open Unix
 open Cilpp_common
 
-let () = runWithPrinter GoblintCil.plainCilPrinter
+let () = runWithPrinter Cil.plainCilPrinter

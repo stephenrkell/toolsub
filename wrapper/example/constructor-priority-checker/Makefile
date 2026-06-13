@@ -8,11 +8,11 @@ default: dumpconstr
 -include $(srcroot)/config.mk
 
 OCAMLFIND ?= ocamlfind
-ifeq ($(CIL_INSTALL),)
-$(error Please set CIL_INSTALL to your CIL directory (containing a file cil/cil.cmxa))
+ifeq ($(CIL_LIBDIR),)
+$(error Please set CIL_LIBDIR to a directory containing a file cil.cmxa)
 endif
 OCAMLFLAGS +=  -package findlib
-OCAMLFLAGS += -I $(CIL_INSTALL)
+OCAMLFLAGS += -I $(CIL_LIBDIR)
 
 %.cmxs: %.cmx 
 	$(OCAMLFIND) ocamlopt -shared -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $+
@@ -27,7 +27,13 @@ OCAMLFLAGS += -I $(CIL_INSTALL)
 	$(OCAMLFIND) ocamlopt -o "$@" $(OCAMLOPTFLAGS) $(OCAMLFLAGS) $(OCAMLLIBS) $< -linkpkg
 	rm -f $*.o
 
-dumpconstr: OCAMLLIBS += $(CIL_INSTALL)goblintCil.cmxa -package unix -package str -package num
+ifneq ($(USE_GOBLINT),)
+CIL_CMXA := $(CIL_LIBDIR)/goblintCil.cmxa
+else
+CIL_CMXA := $(CIL_LIBDIR)/cil.cmxa
+endif
+
+dumpconstr: OCAMLLIBS += $(CIL_CMXA) -package unix -package str -package num
 dumpconstr: dumpconstr.cmx
 
 .SECONDARY: dumpconstr
