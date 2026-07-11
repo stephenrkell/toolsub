@@ -288,7 +288,7 @@ static void write_args(FILE *stream, struct args *args)
 	}
 	fprintf(stream, "\n");
 }
-struct args lift_normalized_cc1_to_cc(struct args *in, const char *driver, struct normalization_result *res)
+struct args lift_normalized_cc1_to_cc(struct args *in, char *driver, struct normalization_result *res)
 {
 	//debug_print 1 "writing cc options for $@" 1>&2
 	if (debug_level >= 1)
@@ -381,7 +381,7 @@ _Bool cc1_command_is_pp(struct args *in)
 	return ret;
 }
 
-struct args get_cc_options_from_cc1_command(struct args *in, const char *driver)
+struct args get_cc_options_from_cc1_command(struct args *in, char *driver)
 {
 	struct normalization_result res; bzero(&res, sizeof res);
 	struct args norm = normalize_cc1_argv(in, &res);
@@ -410,8 +410,6 @@ struct args parse_shell_quoted_line_as_argv(const char *line)
 	 */
 	_Bool in_double_quotes = 0;
 	_Bool in_single_quotes = 0;
-	char *last_word_end = NULL;
-	char *this_word_begin = NULL;
 	char *current_word = NULL;
 	char *current_word_pos;
 	struct args out = { .argc = 0, .argv = NULL };
@@ -423,7 +421,7 @@ struct args parse_shell_quoted_line_as_argv(const char *line)
 	if (!current_word) current_word = calloc(1, 1); \
 	/* fprintf(stderr, "out.argv PRE is %p (size %ld, argc %d)\n", out.argv, out.argv ? (long) malloc_usable_size(out.argv) : (long) 0, out.argc); */ \
 	out.argv = realloc(out.argv, (1 + ++out.argc) * sizeof (char*)); \
-	fprintf(stderr, "out.argv POST is %p\n", out.argv); \
+	debug_println(1, "out.argv POST is %p", out.argv); \
 	if (!out.argv) die("could not allocate memory ()"); \
 	current_word = realloc(current_word, strlen(current_word) + 1); /* shrink it!*/ \
 	/* if argc==0, we have no elements in argv. But we always have at least one. */ \
@@ -533,24 +531,25 @@ static _Bool iterate_commands(struct command_and_terminator *commands, unsigned 
 	return 1;
 }
 
-static void print_command_args(struct args *args)
+static void print_command_args(FILE *stream, struct args *args)
 {
 	for (unsigned i_word = 0; i_word < args->argc; ++i_word)
 	{
 		if (i_word != 0) fprintf(stderr, " ");
 		// FIXME: quote shell, protect from word-splitting
-		fprintf(stderr, "%s", args->argv[i_word]);
+		fprintf(stream, "%s", args->argv[i_word]);
 	}
 }
-static _Bool print_command(struct command_and_terminator *cmd, void *arg_ignored)
+static _Bool print_command(struct command_and_terminator *cmd, void *stream_as_void)
 {
-	fprintf(stderr, " ");
-	print_command_args(&cmd->args);
+	FILE *stream = stream_as_void;
+	fprintf(stream, " ");
+	print_command_args(stream, &cmd->args);
 	if (cmd->ends_with_pipe)
 	{
-		fprintf(stderr, " |");
+		fprintf(stream, " |");
 	}
-	fprintf(stderr, "\n");
+	fprintf(stream, "\n");
 
 	return 1;
 }
@@ -559,11 +558,11 @@ static int input_fd = -1;
 static _Bool rewrite_and_run_command(struct command_and_terminator *cmd, void *driver_pathname_as_void)
 {
 	// debugging
-	print_command(cmd, NULL);
+	if (debug_level >= 1) print_command(cmd, debug_stream?:stderr);
 	// now the real stuff
 	char *driver_pathname = driver_pathname_as_void;
 	struct args the_cmd;
-	fprintf(stderr, "basename is %s\n", basename(cmd->args.argv[0]));
+	debug_println(1, "basename is %s", basename(cmd->args.argv[0]));
 	if (EQUAL_ANY(basename(cmd->args.argv[0]), "cc1", "cc1plus", "clang")
 		&& cc1_command_is_pp(&cmd->args))
 	{
@@ -588,9 +587,12 @@ static _Bool rewrite_and_run_command(struct command_and_terminator *cmd, void *d
 	{
 		the_cmd = cmd->args;
 	}
-	fprintf(stderr, "BECOMES... ");
-	print_command_args(&the_cmd);
-	fprintf(stderr, "\n");
+	if (debug_level >= 1)
+	{
+		fprintf(debug_stream?:stderr, "BECOMES... ");
+		print_command_args(debug_stream?:stderr, &the_cmd);
+		fprintf(debug_stream?:stderr, "\n");
+	}
 	int maybe_our_input = input_fd;
 	int maybe_our_output;
 	/* We may have to pipe the output onwards */
@@ -649,9 +651,9 @@ static _Bool rewrite_and_run_command(struct command_and_terminator *cmd, void *d
 					err(EXIT_FAILURE, "waitpid");
 				}
 				if (WIFEXITED(wstatus)) {
-					warnx("child exited, status %d", (int) WEXITSTATUS(wstatus));
+					debug_println(1, "child exited, status %d", (int) WEXITSTATUS(wstatus));
 				} else if (WIFSIGNALED(wstatus)) {
-					warnx("child killed by signal %d", (int) WTERMSIG(wstatus));
+					debug_println(0, "child killed by signal %d", (int) WTERMSIG(wstatus));
 				}
 			} while (!WIFEXITED(wstatus) && !WIFSIGNALED(wstatus));
 			if (WIFSIGNALED(wstatus)) exit(2);
@@ -729,7 +731,7 @@ int main(int argc, char **argv)
 		 * the defunct child process successfully exits, but getline() still
 		 * hangs. */
 		nread = getline(&the_line_allocated, &len, lines);
-		debug_println(0, "nread was %d", (int) nread);
+		debug_println(1, "nread was %d", (int) nread);
 		assert(the_line_allocated);
 		if (nread != -1)
 		{
@@ -786,7 +788,6 @@ int main(int argc, char **argv)
 	/* If we got here, we want to run the commands. We do a "default rewrite"
 	 * for any that we recognise. The default rewrite is to lift to a single-function
 	 * driver invocation. */
-	//fprintf(stderr, "FIXME: actually run the commands\n");
 	exit_status = 1;
 	_Bool success = iterate_commands(commands, commands_count, rewrite_and_run_command, driver_pathname);
 	if (success) exit_status = 0;
