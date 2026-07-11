@@ -329,10 +329,12 @@ struct args lift_normalized_cc1_to_cc(struct args *in, char *driver, struct norm
 		{
 			// NASTY: with cc1, -MD has an argument! it's the filename, like with -MF.
 			// with cc or cpp, we have to use -MM?D -MF
-			APPEND(out, in->argv[i]);
+			APPEND(out, in->argv[i]); // the -MD or -MMD
 			APPEND(out, "-MF");
 			if (i+1 >= in->argc) die("-MD or -MMD as last argument");
 			APPEND(out, in->argv[i+1]); // the filename argument
+			// now skip the arg too
+			++i;
 		}
 		else
 		{
