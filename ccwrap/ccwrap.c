@@ -1,4 +1,4 @@
-///usr/bin/[ "$0".bin -nt "$0" ] || cc -Wall -no-integrated-cpp ${CFLAGS:--save-temps -g} ${LDFLAGS} "$0" -o "$0".bin <<EOSHELL || exit 1; exec "$0".bin "$@"; exit 42
+///usr/bin/[ "$0".bin -nt "$0" ] || cc -Wall ${CFLAGS:--g} ${LDFLAGS} "$0" -o "$0".bin <<EOSHELL || exit 1; driver="$1"; shift; exec "$0".bin "$(which "$driver")" "$@"; exit 42
 #ifdef EOSHELL
 $(
     # The top half of this file is a shell script.
@@ -688,8 +688,9 @@ int main(int argc, char **argv)
 	{
 		/* The driver is not named by an absolute (/...) or CWD-relative (e.g. ./) path,
 		 * but simply by something that needs PATH-based resolution. We have to do this
-		 * ourselves, but we cheat: use 'which'? */
-		assert(0 && "not implemented yet: PATH lookup");
+		 * ourselves, but we cheat: use 'which' in the '//' line at the very top of the
+		 * file. So we should never reach this. */
+		errx(EXIT_FAILURE, "internal error: driver command is not a pathname (see 'which' on top line)");
 	}
 	char *driver_realpath = realpath(driver_pathname, NULL);
 	if (!driver_realpath) die("driver does not exist?!");
