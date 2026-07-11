@@ -1,4 +1,4 @@
-///usr/bin/[ "$0".bin -nt "$0" ] || cc -Wall ${CFLAGS:--g} ${LDFLAGS} "$0" -o "$0".bin <<EOSHELL || exit 1; driver="$1"; shift; exec "$0".bin "$(which "$driver")" "$@"; exit 42
+///usr/bin/[ "$0".bin -nt "$0" ] || cc -Wall ${CFLAGS:--g -Og} ${LDFLAGS} "$0" -o "$0".bin <<EOSHELL || exit 1; driver="$1"; shift; exec "$0".bin "$(which "$driver")" "$@"; exit 42
 #ifdef EOSHELL
 $(
     # The top half of this file is a shell script.
