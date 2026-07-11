@@ -50,20 +50,6 @@ EOSHELL
 #error "libgen got included? we don't work with POSIX basename()..."
 #endif
 
-// source "$(dirname "${BASH_SOURCE[0]}")"/../wrapper/bin/elap.bash-v2 trap
-// usage: ccwrap compiler <options...>
-// e.g.   ccwrap gcc -o /tmp/hello /tmp/hello.c
-
-// What do we do?
-// 1. parse the -### output into commands as lists of words (shell array variables)
-// 2. substitute subcommands as necessary -- this is really for our extender to do
-// 3. lift subcommands back to driver invocations
-
-// snarf the wrapper functions
-// HACK: we use the old version
-// we use write_cc_options_from_cc1_command
-// . "$(dirname "${BASH_SOURCE[0]}")"/../wrapper/lib/wrapper-funcs.sh
-// ---------------------------------
 static int debug_level;
 FILE *debug_stream;
 int debug_println(int level, const char *fmt, ...)
@@ -156,6 +142,7 @@ struct normalization_result
 };
 // We run a normalizing pass on a cc1 command, to remove some awkward forms from it.
 // NOTE: normalizing cc1 options does not remove the nasty "-MD <argument>" form.
+// We do that when lifting.
 //
 // What does it do?
 // It tries to enumerate input files, but is very imprecise at present.
@@ -290,7 +277,6 @@ static void write_args(FILE *stream, struct args *args)
 }
 struct args lift_normalized_cc1_to_cc(struct args *in, char *driver, struct normalization_result *res)
 {
-	//debug_print 1 "writing cc options for $@" 1>&2
 	if (debug_level >= 1)
 	{
 		fprintf(debug_stream?:stderr, "writing cc options for ");
@@ -761,23 +747,26 @@ int main(int argc, char **argv)
 	pclose_argv(lines);
 
 	/* We've read some commands; we should rewrite them. What's our strategy for that?
+	 * Our rewriting needs to be tailored to the application.
+	 *
 	 * Each command may be something we know how to
 	 * scan              (chunk up the options; with CC_IDENTIFY_ARGS)
+	 *
 	 * rewrite-and-lift  (e.g. cilpp: $driver -E to a tempfile, then CIL to the intended output file)
 	 *      -- above we do this by normalize_and_lift stuff
 	 * just lift?
+	 *
+	 * For now we just do a "default rewriting", which,
+	 * for commands we recognise, means to lift them to single-function driver invocations.
+	 * Use old-style lifting for now. If that results in a wrapper that performs well-ish,
+	 * then it will be worth hte extra effort to .c-ify the clang/gcc-probing stuff.
+	 * (It does perform well enough.)
 	 *
 	 * RE-READ my blog post before going further. Re-read 'wrapper' also. */
 	
 	/* Then do we print them or run them? Do a linear scan of the driver options
 	 * looking for '-###'. If we see it, print then exit. If we get to the end
-	 * without seeing it, run them.
-	 *
-	 * XXX: we should only run them after doing a "default rewriting", which,
-	 * for commands we recognise, means to lift them to single-function driver invocations.
-	 * Use old-style lifting for now. If that results in a wrapper that performs well-ish,
-	 * then it will be worth hte extra effort to .c-ify the clang/gcc-probing stuff.
-	 * We already have the lifting code above!!!! So this should be easy. */
+	 * without seeing it, run them. */
 	exit_status = 0;
 	for (unsigned i_driver_arg = 0; i_driver_arg < argc; ++i_driver_arg)
 	{
